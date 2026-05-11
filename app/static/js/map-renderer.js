@@ -1,0 +1,536 @@
+import { MR2, HEX_VERTICES, cellKey, getTileDef, isWater } from "./shared.js";
+
+// ─── Geometry constants ───────────────────────────────────────────────────────
+
+const HW = MR2.hexWidth;   // 104
+const HH = MR2.hexHeight;  // 68
+const HV = MR2.hexVStep;   // 50  (vertical step between rows)
+
+const MIN_ZOOM    = 0.008;
+const MAX_ZOOM    = 12;
+const ZOOM_STEP   = 1.2;
+const LABEL_ZOOM  = 0.8;
+const LABEL_FULL_ZOOM = 1.4;
+const GRID_ZOOM   = 0.15;  // below this, skip grid lines
+
+// Below this zoom hexes are < 8 px wide; fillRect is faster and looks identical.
+const RECT_ZOOM = 0.08;
+
+// Cell overlay colours
+const COL_MINE              = "#00e8ff";
+const COL_MINE_HOME_FILL    = "rgba(0,232,255,0.88)";    // my home base  — vivid cyan
+const COL_MINE_OUT_FILL     = "rgba(0,170,230,0.50)";    // my outpost    — softer blue-cyan
+const COL_OTHER_HOME_FILL   = "rgba(255,70,0,0.88)";     // enemy home    — vivid orange-red
+const COL_OTHER_OUT_FILL    = "rgba(255,180,0,0.45)";    // enemy outpost — amber
+const COL_WM_FILL           = "rgba(200,200,200,0.35)";  // wild tribe    — light gray tint
+const COL_HOVER_FILL  = "rgba(255,255,255,0.20)";
+const COL_SELECTED_ST = "rgba(255,210,0,0.92)";
+const COL_SELECTED_FL = "rgba(255,210,0,0.30)";
+const COL_FILTER_FILL = "rgba(220,30,30,0.65)";
+const COL_DIM_FILL    = "rgba(0,0,0,0.35)";
+
+// ─── Hex helpers ─────────────────────────────────────────────────────────────
+
+function cellToWorld(cx, cy) {
+  return {
+    x: cx * HW + (cy % 2 !== 0 ? HW / 2 : 0),
+    y: cy * HV,
+  };
+}
+
+function worldToCell(wx, wy) {
+  const approxRow = Math.round(wy / HV);
+  const offset    = approxRow % 2 !== 0 ? HW / 2 : 0;
+  const approxCol = Math.round((wx - offset) / HW);
+
+  let best = null, bestDist = Infinity;
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -2; dc <= 2; dc++) {
+      const c = approxCol + dc, r = approxRow + dr;
+      if (c < 0 || c >= MR2.mapWidth || r < 0 || r >= MR2.mapHeight) continue;
+      const { x: wx2, y: wy2 } = cellToWorld(c, r);
+      const dist = Math.hypot(wx - (wx2 + HW / 2), wy - (wy2 + HH / 2));
+      if (dist < bestDist) { bestDist = dist; best = { x: c, y: r }; }
+    }
+  }
+  return best;
+}
+
+// Single-hex path (used for hover / selected where we need clip or stroke).
+function hexPath(ctx, sx, sy, zoom) {
+  ctx.beginPath();
+  for (let i = 0; i < HEX_VERTICES.length; i++) {
+    const px = sx + HEX_VERTICES[i][0] * zoom;
+    const py = sy + HEX_VERTICES[i][1] * zoom;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+// ─── MapRenderer ──────────────────────────────────────────────────────────────
+
+export class MapRenderer {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx    = canvas.getContext("2d");
+
+    this.cells   = new Map();
+    this.zoom    = 0.06;
+    this.viewX   = (MR2.mapWidth  * HW) / 2 - canvas.clientWidth  / (2 * this.zoom);
+    this.viewY   = (MR2.mapHeight * HV) / 2 - canvas.clientHeight / (2 * this.zoom);
+
+    this.hoveredCell  = null;
+    this.selectedCell = null;
+    this.filter       = null;
+
+    this._dragging   = false;
+    this._dragStartX = 0;
+    this._dragStartY = 0;
+    this._dragViewX  = 0;
+    this._dragViewY  = 0;
+    this._hasDragged = false;
+
+    this._dirty = true;
+    this._rafId = null;
+
+    this.onCellHover    = null;
+    this.onCellClick    = null;
+    this.onCoordsChange = null;
+
+    this._bindEvents();
+    this._scheduleRender();
+  }
+
+  // ─── Public API ─────────────────────────────────────────────────────────────
+
+  ingestArea(areaData) {
+    for (const [xStr, row] of Object.entries(areaData)) {
+      const cx = parseInt(xStr, 10);
+      for (const [yStr, data] of Object.entries(row)) {
+        const cy = parseInt(yStr, 10);
+        if (cx < 0 || cx >= MR2.mapWidth || cy < 0 || cy >= MR2.mapHeight) continue;
+        this.cells.set(cellKey(cx, cy), Object.assign({}, data, { x: cx, y: cy }));
+      }
+    }
+    this.markDirty();
+  }
+
+  clearCells() {
+    this.cells.clear();
+    this.hoveredCell = null;
+    this.selectedCell = null;
+    this.markDirty();
+  }
+
+  centerOn(cx, cy) {
+    const { x, y } = cellToWorld(cx, cy);
+    this.viewX = x + HW / 2 - this.canvas.clientWidth  / (2 * this.zoom);
+    this.viewY = y + HH / 2 - this.canvas.clientHeight / (2 * this.zoom);
+    this._clampView();
+    this.markDirty();
+  }
+
+  setZoom(newZoom, pivotSX, pivotSY) {
+    const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
+    const wx = pivotSX / this.zoom + this.viewX;
+    const wy = pivotSY / this.zoom + this.viewY;
+    this.zoom  = clamped;
+    this.viewX = wx - pivotSX / this.zoom;
+    this.viewY = wy - pivotSY / this.zoom;
+    this._clampView();
+    this.markDirty();
+  }
+
+  zoomIn()  { this.setZoom(this.zoom * ZOOM_STEP, this.canvas.clientWidth / 2, this.canvas.clientHeight / 2); }
+  zoomOut() { this.setZoom(this.zoom / ZOOM_STEP, this.canvas.clientWidth / 2, this.canvas.clientHeight / 2); }
+
+  markDirty() { this._dirty = true; }
+
+  resize() {
+    const dpr = window.devicePixelRatio || 1;
+    this.canvas.width  = Math.round(this.canvas.clientWidth  * dpr);
+    this.canvas.height = Math.round(this.canvas.clientHeight * dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this._clampView();
+    this.markDirty();
+  }
+
+  findHomeCell() {
+    for (const cell of this.cells.values()) {
+      if (cell.mine === 1) return cell;
+    }
+    return null;
+  }
+
+  getCellAt(cx, cy) { return this.cells.get(cellKey(cx, cy)) ?? null; }
+
+  getPlayerCells() {
+    const seen = new Map();
+    for (const cell of this.cells.values()) {
+      if (cell.uid > 0 && cell.n) {
+        const k = cell.n.toLowerCase();
+        const existing = seen.get(k);
+        if (!existing || (cell.b === 2 && existing.b !== 2)) seen.set(k, cell);
+      }
+    }
+    return [...seen.values()];
+  }
+
+  setFilter(filter) { this.filter = filter; this.markDirty(); }
+
+  countFilterMatches() {
+    if (!this._hasActiveFilter()) return 0;
+    let n = 0;
+    for (const cell of this.cells.values()) { if (this._cellMatchesFilter(cell)) n++; }
+    return n;
+  }
+
+  _hasActiveFilter() {
+    if (!this.filter) return false;
+    const { playerName, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange } = this.filter;
+    return !!(playerName || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange);
+  }
+
+  _cellMatchesFilter(cell) {
+    const f = this.filter;
+    if (!f) return false;
+    const i = cell.i ?? 0;
+
+    if (f.playerName && cell.uid > 0 && cell.n &&
+        cell.n.toLowerCase().includes(f.playerName)) return true;
+
+    if (f.baseTypes.size) {
+      if (f.baseTypes.has("main")        && cell.b === MR2.cellTypes.HOMECELL) return true;
+      if (f.baseTypes.has("outpost")     && cell.b === MR2.cellTypes.OUTPOST)  return true;
+      if (f.baseTypes.has("wildmonster") && cell.b === MR2.cellTypes.WM)       return true;
+    }
+
+    if (f.terrainTypes.size) {
+      if (f.terrainTypes.has("water") && i <= 99)              return true;
+      if (f.terrainTypes.has("sand")  && i > 99  && i <= 110)  return true;
+      if (f.terrainTypes.has("grass") && i > 110 && i <= 170)  return true;
+      if (f.terrainTypes.has("rock")  && i > 170)              return true;
+    }
+
+    // Bonus range filters — only apply to outposts on land
+    if ((f.towerBonusRange || f.resourceBonusRange) &&
+        cell.b === MR2.cellTypes.OUTPOST && i > 99) {
+      const ALT_AVG = 125;
+      const tower   = Math.round(i * 100 / ALT_AVG - 100);
+      const res     = Math.round(100 * ALT_AVG / i - 100);
+      if (f.towerBonusRange    && tower >= f.towerBonusRange.min    && tower <= f.towerBonusRange.max)    return true;
+      if (f.resourceBonusRange && res   >= f.resourceBonusRange.min && res   <= f.resourceBonusRange.max) return true;
+    }
+
+    return false;
+  }
+
+  // ─── Rendering ──────────────────────────────────────────────────────────────
+
+  _scheduleRender() {
+    this._rafId = requestAnimationFrame(() => {
+      if (this._dirty) { this._render(); this._dirty = false; }
+      this._scheduleRender();
+    });
+  }
+
+  _render() {
+    const { ctx, zoom } = this;
+    const W = this.canvas.clientWidth;
+    const H = this.canvas.clientHeight;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#0e1a24";
+    ctx.fillRect(0, 0, W, H);
+
+    // Precompute scaled vertex flat array for this zoom [vx*z, vy*z, ...]
+    const zv = new Float32Array(12);
+    for (let i = 0; i < 6; i++) {
+      zv[i * 2]     = HEX_VERTICES[i][0] * zoom;
+      zv[i * 2 + 1] = HEX_VERTICES[i][1] * zoom;
+    }
+
+    const useRect     = zoom < RECT_ZOOM;
+    const rw          = HW * zoom + 1;  // +1 fills sub-pixel gaps between cells
+    const rh          = HV * zoom + 1;
+    const filterActive = this._hasActiveFilter();
+
+    // Visible cell range
+    const startCY = Math.max(0, Math.floor(this.viewY / HV) - 1);
+    const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / zoom) / HV) + 1);
+    const startCX = Math.max(0, Math.floor(this.viewX / HW) - 2);
+    const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / zoom) / HW) + 2);
+
+    // ── Single pass: collect positions into colour-keyed buckets ─────────────
+    // Flat arrays [sx, sy, sx, sy, ...] per fill style — minimal allocation.
+    const terrain = new Map();  // fillColor  → number[]
+    const overlay = new Map();  // fillColor  → number[]
+    const fDim    = [];         // filter dim positions
+    const fHit    = [];         // filter hit positions
+
+    for (let cy = startCY; cy <= endCY; cy++) {
+      const offset = cy % 2 !== 0 ? HW / 2 : 0;
+      for (let cx = startCX; cx <= endCX; cx++) {
+        const cell = this.cells.get(cellKey(cx, cy));
+        const sx = (cx * HW + offset - this.viewX) * zoom;
+        const sy = (cy * HV - this.viewY) * zoom;
+
+        // Terrain
+        const fill = getTileDef(cell?.i ?? 0).fill;
+        let tb = terrain.get(fill);
+        if (!tb) { tb = []; terrain.set(fill, tb); }
+        tb.push(sx, sy);
+
+        // Base overlay — tribe cells get a light gray tint; player cells get colour
+        if (cell && cell.b !== undefined && !isWater(cell.i ?? 0)) {
+          const isHome = cell.b === MR2.cellTypes.HOMECELL;
+          const oc = cell.uid === 0
+            ? COL_WM_FILL
+            : cell.mine === 1
+              ? (isHome ? COL_MINE_HOME_FILL : COL_MINE_OUT_FILL)
+              : (isHome ? COL_OTHER_HOME_FILL : COL_OTHER_OUT_FILL);
+          let ob = overlay.get(oc);
+          if (!ob) { ob = []; overlay.set(oc, ob); }
+          ob.push(sx, sy);
+        }
+
+        // Filter
+        if (filterActive && cell) {
+          if (this._cellMatchesFilter(cell)) fHit.push(sx, sy);
+          else fDim.push(sx, sy);
+        }
+      }
+    }
+
+    // ── Batch draw: one fill() per unique colour ──────────────────────────────
+    const fillBucket = (color, pos) => {
+      if (!pos.length) return;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      if (useRect) {
+        for (let i = 0; i < pos.length; i += 2) ctx.rect(pos[i], pos[i + 1], rw, rh);
+      } else {
+        for (let i = 0; i < pos.length; i += 2) {
+          const sx = pos[i], sy = pos[i + 1];
+          ctx.moveTo(sx + zv[0], sy + zv[1]);
+          ctx.lineTo(sx + zv[2], sy + zv[3]);
+          ctx.lineTo(sx + zv[4], sy + zv[5]);
+          ctx.lineTo(sx + zv[6], sy + zv[7]);
+          ctx.lineTo(sx + zv[8], sy + zv[9]);
+          ctx.lineTo(sx + zv[10], sy + zv[11]);
+          ctx.closePath();
+        }
+      }
+      ctx.fill();
+    };
+
+    for (const [color, pos] of terrain) fillBucket(color, pos);
+    for (const [color, pos] of overlay) fillBucket(color, pos);
+
+    if (filterActive) {
+      fillBucket(COL_DIM_FILL,    fDim);
+      fillBucket(COL_FILTER_FILL, fHit);
+    }
+
+    // ── Hover / selected (single hex — still fast, < 2 cells) ────────────────
+    if (this.hoveredCell) {
+      const { x: cx, y: cy } = this.hoveredCell;
+      const offset = cy % 2 !== 0 ? HW / 2 : 0;
+      hexPath(ctx, (cx * HW + offset - this.viewX) * zoom, (cy * HV - this.viewY) * zoom, zoom);
+      ctx.fillStyle = COL_HOVER_FILL;
+      ctx.fill();
+    }
+
+    if (this.selectedCell) {
+      const { x: cx, y: cy } = this.selectedCell;
+      const offset = cy % 2 !== 0 ? HW / 2 : 0;
+      const sx = (cx * HW + offset - this.viewX) * zoom;
+      const sy = (cy * HV - this.viewY) * zoom;
+      hexPath(ctx, sx, sy, zoom);
+      ctx.fillStyle = COL_SELECTED_FL;
+      ctx.fill();
+      ctx.strokeStyle = COL_SELECTED_ST;
+      ctx.lineWidth = Math.max(1, zoom * 1.5);
+      ctx.stroke();
+    }
+
+    // ── Grid lines: single batched stroke() above threshold ──────────────────
+    if (zoom >= GRID_ZOOM) {
+      ctx.strokeStyle = "rgba(0,0,0,0.18)";
+      ctx.lineWidth   = 0.5;
+      ctx.beginPath();
+      for (let cy = startCY; cy <= endCY; cy++) {
+        const offset = cy % 2 !== 0 ? HW / 2 : 0;
+        for (let cx = startCX; cx <= endCX; cx++) {
+          const sx = (cx * HW + offset - this.viewX) * zoom;
+          const sy = (cy * HV - this.viewY) * zoom;
+          ctx.moveTo(sx + zv[0], sy + zv[1]);
+          ctx.lineTo(sx + zv[2], sy + zv[3]);
+          ctx.lineTo(sx + zv[4], sy + zv[5]);
+          ctx.lineTo(sx + zv[6], sy + zv[7]);
+          ctx.lineTo(sx + zv[8], sy + zv[9]);
+          ctx.lineTo(sx + zv[10], sy + zv[11]);
+          ctx.closePath();
+        }
+      }
+      ctx.stroke();
+    }
+
+    // ── Labels ────────────────────────────────────────────────────────────────
+    if (zoom >= LABEL_ZOOM) {
+      ctx.textAlign    = "center";
+      ctx.textBaseline = "middle";
+      const hwPx = HW * zoom;
+      const hhPx = HH * zoom;
+      for (let cy = startCY; cy <= endCY; cy++) {
+        const offset = cy % 2 !== 0 ? HW / 2 : 0;
+        for (let cx = startCX; cx <= endCX; cx++) {
+          const cell = this.cells.get(cellKey(cx, cy));
+          if (!cell || isWater(cell.i ?? 0) || !cell.n) continue;
+          const sx = (cx * HW + offset - this.viewX) * zoom + hwPx / 2;
+          const sy = (cy * HV - this.viewY) * zoom + hhPx / 2;
+          const isHomeLabel = cell.b === MR2.cellTypes.HOMECELL;
+          ctx.fillStyle = cell.uid === 0
+            ? "rgba(255,255,255,0.45)"   // tribe name — subtle, no special colour
+            : cell.mine === 1
+              ? (isHomeLabel ? "#00e8ff" : "#00bbee")
+              : (isHomeLabel ? "#ff7030" : "#ffcc40");
+          if (zoom >= LABEL_FULL_ZOOM) {
+            ctx.font = `bold ${Math.min(hhPx * 0.22, 12)}px "Trebuchet MS", sans-serif`;
+            ctx.fillText(cell.n.substring(0, 12), sx, sy - hhPx * 0.1);
+            ctx.font = `${Math.min(hhPx * 0.18, 10)}px "Trebuchet MS", sans-serif`;
+            ctx.fillStyle = "rgba(255,255,255,0.7)";
+            ctx.fillText(`Lv ${cell.l ?? "?"}`, sx, sy + hhPx * 0.15);
+          } else {
+            ctx.font = `bold ${Math.min(hhPx * 0.22, 11)}px "Trebuchet MS", sans-serif`;
+            ctx.fillText(cell.n.substring(0, 8), sx, sy);
+          }
+        }
+      }
+    }
+
+    // ── Map border ────────────────────────────────────────────────────────────
+    ctx.strokeStyle = "rgba(100,160,255,0.40)";
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(
+      -this.viewX * zoom,
+      -this.viewY * zoom,
+      MR2.mapWidth * HW * zoom,
+      (MR2.mapHeight * HV + HH - HV) * zoom,
+    );
+  }
+
+  // ─── Coordinate helpers ──────────────────────────────────────────────────────
+
+  _screenToCell(sx, sy) {
+    return worldToCell(sx / this.zoom + this.viewX, sy / this.zoom + this.viewY);
+  }
+
+  _clampView() {
+    const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
+    const mapW = MR2.mapWidth * HW, mapH = MR2.mapHeight * HV + HH - HV;
+    const m = 0.2;
+    this.viewX = Math.max(-(W / this.zoom) * m, Math.min(this.viewX, mapW + (W / this.zoom) * m - W / this.zoom));
+    this.viewY = Math.max(-(H / this.zoom) * m, Math.min(this.viewY, mapH + (H / this.zoom) * m - H / this.zoom));
+  }
+
+  // ─── Events ──────────────────────────────────────────────────────────────────
+
+  _bindEvents() {
+    const canvas = this.canvas;
+
+    canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      this.setZoom(this.zoom * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP),
+                   e.clientX - rect.left, e.clientY - rect.top);
+    }, { passive: false });
+
+    canvas.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      canvas.setPointerCapture(e.pointerId);
+      this._dragging  = true;
+      this._hasDragged = false;
+      const rect = canvas.getBoundingClientRect();
+      this._dragStartX = e.clientX - rect.left;
+      this._dragStartY = e.clientY - rect.top;
+      this._dragViewX  = this.viewX;
+      this._dragViewY  = this.viewY;
+      canvas.style.cursor = "grabbing";
+    });
+
+    canvas.addEventListener("pointermove", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+
+      if (this._dragging) {
+        const dx = sx - this._dragStartX, dy = sy - this._dragStartY;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) this._hasDragged = true;
+        this.viewX = this._dragViewX - dx / this.zoom;
+        this.viewY = this._dragViewY - dy / this.zoom;
+        this._clampView();
+        this.markDirty();
+      } else {
+        const coord = this._screenToCell(sx, sy);
+        if (this.onCoordsChange) this.onCoordsChange(coord?.x ?? null, coord?.y ?? null);
+        if (coord) {
+          const cell = this.cells.get(cellKey(coord.x, coord.y)) ?? { x: coord.x, y: coord.y };
+          if (!this.hoveredCell || this.hoveredCell.x !== coord.x || this.hoveredCell.y !== coord.y) {
+            this.hoveredCell = cell;
+            this.markDirty();
+            if (this.onCellHover) this.onCellHover(cell);
+          }
+        } else if (this.hoveredCell) {
+          this.hoveredCell = null;
+          this.markDirty();
+          if (this.onCellHover) this.onCellHover(null);
+        }
+      }
+    });
+
+    canvas.addEventListener("pointerup", (e) => {
+      if (!this._dragging) return;
+      this._dragging = false;
+      canvas.style.cursor = "crosshair";
+      if (!this._hasDragged) {
+        const rect = canvas.getBoundingClientRect();
+        const coord = this._screenToCell(e.clientX - rect.left, e.clientY - rect.top);
+        if (coord) {
+          const cell = this.cells.get(cellKey(coord.x, coord.y)) ?? { x: coord.x, y: coord.y };
+          this.selectedCell = cell;
+          this.markDirty();
+          if (this.onCellClick) this.onCellClick(cell);
+        } else {
+          this.selectedCell = null;
+          this.markDirty();
+          if (this.onCellClick) this.onCellClick(null);
+        }
+      }
+    });
+
+    canvas.addEventListener("pointerleave", () => {
+      if (this.hoveredCell) { this.hoveredCell = null; this.markDirty(); if (this.onCellHover) this.onCellHover(null); }
+      if (this._dragging)   { this._dragging = false; canvas.style.cursor = "crosshair"; }
+    });
+
+    let _td = null;
+    canvas.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 2)
+        _td = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    }, { passive: true });
+    canvas.addEventListener("touchmove", (e) => {
+      if (e.touches.length === 2 && _td !== null) {
+        e.preventDefault();
+        const d    = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        const rect = canvas.getBoundingClientRect();
+        this.setZoom(this.zoom * (d / _td),
+                     (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left,
+                     (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top);
+        _td = d;
+      }
+    }, { passive: false });
+    canvas.addEventListener("touchend", () => { _td = null; });
+
+    canvas.style.cursor = "crosshair";
+  }
+}
