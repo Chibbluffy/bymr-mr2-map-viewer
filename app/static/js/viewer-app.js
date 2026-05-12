@@ -297,9 +297,7 @@ export class ViewerApp {
     findHomeButton?.addEventListener("click", () => {
       if (!this.renderer) return;
       const home = this.renderer.findHomeCell();
-      if (home) {
-        this.renderer.centerOn(home.x, home.y);
-      }
+      if (home) this._jumpTo(home.x, home.y);
     });
 
     refreshButton?.addEventListener("click", () => {
@@ -339,7 +337,7 @@ export class ViewerApp {
       if (e.key === "-") this.renderer?.zoomOut();
       if (e.key === "h" || e.key === "H") {
         const home = this.renderer?.findHomeCell();
-        if (home) this.renderer.centerOn(home.x, home.y);
+        if (home) this._jumpTo(home.x, home.y);
       }
       if (e.key === "Escape") {
         this.selectedCell = null;
@@ -602,10 +600,10 @@ export class ViewerApp {
     const total = toLoad.length;
     const onProgress = () => {
       done++;
-      this._showProgress(`Fetching chunks… ${done} / ${total}`, done, total);
+      this._showProgress("Fetching", done, total);
     };
 
-    this._showProgress(`Fetching ${total} chunk${total !== 1 ? "s" : ""}…`, 0, total);
+    this._showProgress("Fetching", 0, total);
 
     const sem   = new Semaphore(8);
     const token = this.session.token;
@@ -670,7 +668,7 @@ export class ViewerApp {
     let done = 0;
     const total  = toLoad.length;
 
-    this._showProgress(`Background loading... 0 / ${total}`, 0, total);
+    this._showProgress("Background loading", 0, total);
 
     await Promise.all(toLoad.map(async ({ x, y }) => {
       if (signal.aborted) return;
@@ -679,7 +677,7 @@ export class ViewerApp {
       if (!signal.aborted) {
         done++;
         if (done % 50 === 0 || done === total) {
-          this._showProgress(`Background loading... ${done} / ${total}`, done, total);
+          this._showProgress("Background loading", done, total);
         }
       }
     }));
@@ -744,6 +742,14 @@ export class ViewerApp {
       this._storeHomePos(home.x, home.y);
       this.renderer.centerOn(home.x, home.y);
     }
+  }
+
+  // Center the camera on a cell and immediately load any unloaded chunks
+  // that are now visible.  Use this for all programmatic jumps so the
+  // destination area is always filled in, even near map edges.
+  _jumpTo(cx, cy) {
+    this.renderer.centerOn(cx, cy);
+    this._loadViewport();
   }
 
   _storeHomePos(x, y) {
@@ -990,7 +996,7 @@ export class ViewerApp {
         const idx = parseInt(btn.dataset.index, 10);
         const cell = this.searchMatches[idx];
         if (cell) {
-          this.renderer.centerOn(cell.x, cell.y);
+          this._jumpTo(cell.x, cell.y);
           this.selectedCell = cell;
           this.renderer.selectedCell = cell;
           this.renderer.markDirty();
