@@ -205,33 +205,46 @@ export class MapRenderer {
     if (!f) return false;
     const i = cell.i ?? 0;
 
-    if (f.playerName && cell.uid > 0 && cell.n &&
-        cell.n.toLowerCase().includes(f.playerName)) return true;
+    // AND logic between active groups — every active group must pass.
+    // Within each group the check is OR (any selected value matches).
 
+    // ── Player name ──────────────────────────────────────────────────────────
+    if (f.playerName) {
+      if (!(cell.uid > 0 && cell.n && cell.n.toLowerCase().includes(f.playerName))) return false;
+    }
+
+    // ── Base type ────────────────────────────────────────────────────────────
     if (f.baseTypes.size) {
-      if (f.baseTypes.has("main")        && cell.b === MR2.cellTypes.HOMECELL) return true;
-      if (f.baseTypes.has("outpost")     && cell.b === MR2.cellTypes.OUTPOST)  return true;
-      if (f.baseTypes.has("wildmonster") && cell.b === MR2.cellTypes.WM)       return true;
+      const baseMatch =
+        (f.baseTypes.has("main")        && cell.b === MR2.cellTypes.HOMECELL) ||
+        (f.baseTypes.has("outpost")     && cell.b === MR2.cellTypes.OUTPOST)  ||
+        (f.baseTypes.has("wildmonster") && cell.b === MR2.cellTypes.WM);
+      if (!baseMatch) return false;
     }
 
+    // ── Terrain type ─────────────────────────────────────────────────────────
     if (f.terrainTypes.size) {
-      if (f.terrainTypes.has("water") && i <= 99)              return true;
-      if (f.terrainTypes.has("sand")  && i > 99  && i <= 110)  return true;
-      if (f.terrainTypes.has("grass") && i > 110 && i <= 170)  return true;
-      if (f.terrainTypes.has("rock")  && i > 170)              return true;
+      const terrainMatch =
+        (f.terrainTypes.has("water") && i <= 99)             ||
+        (f.terrainTypes.has("sand")  && i > 99  && i <= 110) ||
+        (f.terrainTypes.has("grass") && i > 110 && i <= 170) ||
+        (f.terrainTypes.has("rock")  && i > 170);
+      if (!terrainMatch) return false;
     }
 
-    // Bonus range filters — only apply to outposts on land
-    if ((f.towerBonusRange || f.resourceBonusRange) &&
-        cell.b === MR2.cellTypes.OUTPOST && i > 99) {
+    // ── Bonus ranges — only meaningful for outposts on land ──────────────────
+    // If either slider is narrowed from its limit it acts as an additional AND
+    // constraint. A non-outpost cell fails this group automatically.
+    if (f.towerBonusRange || f.resourceBonusRange) {
+      if (cell.b !== MR2.cellTypes.OUTPOST || i <= 99) return false;
       const ALT_AVG = 125;
       const tower   = Math.round(i * 100 / ALT_AVG - 100);
       const res     = Math.round(100 * ALT_AVG / i - 100);
-      if (f.towerBonusRange    && tower >= f.towerBonusRange.min    && tower <= f.towerBonusRange.max)    return true;
-      if (f.resourceBonusRange && res   >= f.resourceBonusRange.min && res   <= f.resourceBonusRange.max) return true;
+      if (f.towerBonusRange    && !(tower >= f.towerBonusRange.min    && tower <= f.towerBonusRange.max))    return false;
+      if (f.resourceBonusRange && !(res   >= f.resourceBonusRange.min && res   <= f.resourceBonusRange.max)) return false;
     }
 
-    return false;
+    return true;
   }
 
   // ─── Rendering ──────────────────────────────────────────────────────────────
