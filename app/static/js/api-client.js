@@ -77,16 +77,16 @@ export class ApiClient {
     });
   }
 
-  // Fetch a 10x10 (actually 11x11 inclusive) area chunk from the MR2 map.
-  // Returns { error, x, y, data: { [x]: { [y]: cellData } } }
-  async getMapArea(token, x, y) {
-    return fetchJson(buildBymUrl("/worldmapv2/getarea", null, this.config), {
+  // Bulk cell fetch for the viewer — up to 20 000 1-based cell IDs per call.
+  // Returns { celldata: [{ x, y, ...fields }] }
+  async getMapCells(token, cellIds) {
+    return fetchJson(buildBymUrl("/worldmapv2/getcellsforviewer", null, this.config), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
       },
-      body: new URLSearchParams({ x: String(x), y: String(y), sendresources: "0" }),
+      body: new URLSearchParams({ cellids: JSON.stringify(cellIds) }),
     });
   }
 

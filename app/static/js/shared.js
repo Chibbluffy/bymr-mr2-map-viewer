@@ -27,9 +27,7 @@ export const MR2 = {
   hexWidth:  104,
   hexHeight: 68,
   hexVStep:  50,   // vertical step between rows (hexHeight - overlap)
-  // getArea returns cells [x .. x+10][y .. y+10]; step by 10 for tiling
-  chunkStep: 10,
-  // No server-side rate limit on /worldmapv2/getarea
+  // No server-side rate limit on /worldmapv2/getcellsforviewer
   concurrency: 30,
   // Terrain height thresholds (MapRoomCell.as Update() / Terrain enum)
   terrain: {
@@ -207,21 +205,33 @@ export async function fetchJson(url, options = {}) {
   return payload;
 }
 
-// ─── Chunk coordinates (sorted nearest-centre first) ────────────────────────
+// ─── Cell IDs for bulk viewer loading ────────────────────────────────────────
 
-export function generateChunkCoords() {
-  const step = MR2.chunkStep;
-  const cx = MR2.mapWidth  / 2;
-  const cy = MR2.mapHeight / 2;
-  const coords = [];
-  for (let y = 0; y < MR2.mapHeight; y += step) {
-    for (let x = 0; x < MR2.mapWidth; x += step) {
-      const dist = Math.hypot(x + step / 2 - cx, y + step / 2 - cy);
-      coords.push({ x, y, dist });
+// Generate all 640 000 cell IDs sorted by squared distance from centre.
+// Batches sent to /worldmapv2/getcellsforviewer load the player's home area
+// first.  Uses TypedArrays (~10 MB peak) to avoid GC pressure from 640 K JS
+// objects.  Returns 1-based IDs: id = y * WIDTH + x + 1.
+export function generateAllCellIds() {
+  const W = MR2.mapWidth, H = MR2.mapHeight;
+  const cx = W / 2, cy = H / 2;
+  const total = W * H;
+
+  const distSq = new Float32Array(total);
+  for (let y = 0; y < H; y++) {
+    const dy = y - cy;
+    for (let x = 0; x < W; x++) {
+      const dx = x - cx;
+      distSq[y * W + x] = dx * dx + dy * dy;
     }
   }
-  coords.sort((a, b) => a.dist - b.dist);
-  return coords;
+
+  const indices = new Uint32Array(total);
+  for (let i = 0; i < total; i++) indices[i] = i;
+  indices.sort((a, b) => distSq[a] - distSq[b]);
+
+  const ids = new Array(total);
+  for (let i = 0; i < total; i++) ids[i] = indices[i] + 1;
+  return ids;
 }
 
 // ─── IndexedDB session cache ─────────────────────────────────────────────────

@@ -115,6 +115,15 @@ export class MapRenderer {
     this.markDirty();
   }
 
+  // Ingest a flat array of { x, y, ...fields } returned by /worldmapv2/getcellsforviewer.
+  ingestCells(celldata) {
+    for (const cell of celldata) {
+      if (cell.x < 0 || cell.x >= MR2.mapWidth || cell.y < 0 || cell.y >= MR2.mapHeight) continue;
+      this.cells.set(cellKey(cell.x, cell.y), cell);
+    }
+    this.markDirty();
+  }
+
   clearCells() {
     this.cells.clear();
     this.hoveredCell = null;
@@ -380,8 +389,10 @@ export class MapRenderer {
     if (zoom >= LABEL_ZOOM) {
       ctx.textAlign    = "center";
       ctx.textBaseline = "middle";
+      ctx.lineJoin     = "round";   // smooth corners on stroked letters
       const hwPx = HW * zoom;
       const hhPx = HH * zoom;
+
       for (let cy = startCY; cy <= endCY; cy++) {
         const offset = cy % 2 !== 0 ? HW / 2 : 0;
         for (let cx = startCX; cx <= endCX; cx++) {
@@ -390,20 +401,36 @@ export class MapRenderer {
           const sx = (cx * HW + offset - this.viewX) * zoom + hwPx / 2;
           const sy = (cy * HV - this.viewY) * zoom + hhPx / 2;
           const isHomeLabel = cell.b === MR2.cellTypes.HOMECELL;
-          ctx.fillStyle = cell.uid === 0
-            ? "rgba(255,255,255,0.45)"   // tribe name — subtle, no special colour
+
+          // White text with dark outline — readable on any overlay colour.
+          // Tinted slightly to hint at whose cell it is while keeping contrast.
+          const nameColor = cell.uid === 0
+            ? "rgba(255,255,255,0.70)"   // tribe — subtle white
             : cell.mine === 1
-              ? (isHomeLabel ? "#00e8ff" : "#00bbee")
-              : (isHomeLabel ? "#ff7030" : "#ffcc40");
+              ? (isHomeLabel ? "#ffffff"  : "#cceeff")  // my home / my outpost
+              : (isHomeLabel ? "#ffffff"  : "#fff0cc");  // other home / other outpost
+
           if (zoom >= LABEL_FULL_ZOOM) {
-            ctx.font = `bold ${Math.min(hhPx * 0.22, 12)}px "Trebuchet MS", sans-serif`;
-            ctx.fillText(cell.n.substring(0, 12), sx, sy - hhPx * 0.1);
-            ctx.font = `${Math.min(hhPx * 0.18, 10)}px "Trebuchet MS", sans-serif`;
-            ctx.fillStyle = "rgba(255,255,255,0.7)";
-            ctx.fillText(`Lv ${cell.l ?? "?"}`, sx, sy + hhPx * 0.15);
+            // Name
+            ctx.font      = `bold ${Math.min(hhPx * 0.22, 12)}px "Trebuchet MS", sans-serif`;
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = "rgba(0,0,0,0.88)";
+            ctx.strokeText(cell.n.substring(0, 12), sx, sy - hhPx * 0.1);
+            ctx.fillStyle = nameColor;
+            ctx.fillText(cell.n.substring(0, 12),   sx, sy - hhPx * 0.1);
+            // Level
+            ctx.font      = `${Math.min(hhPx * 0.18, 10)}px "Trebuchet MS", sans-serif`;
+            ctx.lineWidth = 2;
+            ctx.strokeText(`Lv ${cell.l ?? "?"}`, sx, sy + hhPx * 0.15);
+            ctx.fillStyle = "rgba(255,255,255,0.82)";
+            ctx.fillText(`Lv ${cell.l ?? "?"}`,   sx, sy + hhPx * 0.15);
           } else {
-            ctx.font = `bold ${Math.min(hhPx * 0.22, 11)}px "Trebuchet MS", sans-serif`;
-            ctx.fillText(cell.n.substring(0, 8), sx, sy);
+            ctx.font      = `bold ${Math.min(hhPx * 0.22, 11)}px "Trebuchet MS", sans-serif`;
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "rgba(0,0,0,0.88)";
+            ctx.strokeText(cell.n.substring(0, 8), sx, sy);
+            ctx.fillStyle = nameColor;
+            ctx.fillText(cell.n.substring(0, 8),   sx, sy);
           }
         }
       }
