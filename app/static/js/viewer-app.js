@@ -7,6 +7,8 @@ import {
   SEARCH_RESULT_LIMIT,
   buildTokenStorageKey,
   buildFullMapCacheKey,
+  buildLoadedChunksCacheKey,
+  buildHomePosKey,
   escapeHtml,
   generateChunkCoords,
   getLocalViewerConfig,
@@ -68,11 +70,23 @@ export class ViewerApp {
     this.serverSelection = null;
     this.filterOpen = false;
 
-    // Map load state
+    // ── Demand-load state ────────────────────────────────────────────────────
+    // Set of "x,y" chunk-origin strings already fetched this session
+    this._loadedChunks   = new Set();
+    // Chunks currently in-flight — prevents duplicate requests while panning
+    this._pendingChunks  = new Set();
+    // AbortController for the viewport / full-load operations
     this._loadAbortController = null;
+    // AbortController for background full-map load
+    this._bgAbortController  = null;
+    this._bgLoadActive = false;
+    // Debounce timer for persisting the loaded-chunks Set to IndexedDB
+    this._saveChunksTimer = null;
+    // Debounce timer for persisting cell data to IndexedDB
+    this._saveCellsTimer  = null;
+    // Simple counters for the progress bar
     this._loadTotal = 0;
-    this._loadDone = 0;
-    this._loadInProgress = false;
+    this._loadDone  = 0;
 
     this.elements = {
       appRoot:            document.getElementById("app"),
@@ -110,6 +124,7 @@ export class ViewerApp {
       filterPlayerResults:  document.getElementById("filter-player-results"),
       filterClearButton:    document.getElementById("filter-clear-button"),
       filterMatchCount:     document.getElementById("filter-match-count"),
+      bgLoadButton:         document.getElementById("bg-load-button"),
     };
   }
 
@@ -251,6 +266,11 @@ export class ViewerApp {
       }
     };
 
+    // Demand-load new chunks as the user pans or zooms
+    this.renderer.onViewportChanged = () => {
+      if (this.session) this._loadViewport();
+    };
+
     // Resize observer
     const ro = new ResizeObserver(() => this.renderer.resize());
     ro.observe(canvas);
@@ -286,7 +306,11 @@ export class ViewerApp {
     });
 
     refreshButton?.addEventListener("click", () => {
-      if (this.session) this._startFullMapLoad(true);
+      if (this.session) this._refreshMap();
+    });
+
+    this.elements.bgLoadButton?.addEventListener("click", () => {
+      if (this.session) this._toggleBackgroundLoad();
     });
 
     zoomInButton?.addEventListener("click", () => this.renderer?.zoomIn());
@@ -376,17 +400,21 @@ export class ViewerApp {
     this._showStatus("");
     this._updateSessionUI();
 
-    await this._startFullMapLoad(false);
+    await this._initMapLoad();
   }
 
   _handleLogout() {
     const tokenKey = buildTokenStorageKey(this.config);
     localStorage.removeItem(tokenKey);
 
-    if (this._loadAbortController) {
-      this._loadAbortController.abort();
-      this._loadAbortController = null;
-    }
+    if (this._loadAbortController) { this._loadAbortController.abort(); this._loadAbortController = null; }
+    if (this._bgAbortController)   { this._bgAbortController.abort();   this._bgAbortController   = null; }
+    this._bgLoadActive  = false;
+    this._loadedChunks  = new Set();
+    this._pendingChunks = new Set();
+    clearTimeout(this._saveChunksTimer);
+    clearTimeout(this._saveCellsTimer);
+    this._setBgLoadButtonState(false);
 
     this.session = null;
     this.renderer?.clearCells();
@@ -400,6 +428,7 @@ export class ViewerApp {
     this.elements.refreshButton.disabled = true;
     this.elements.searchToggleButton.disabled = true;
     this.elements.searchInput.disabled = true;
+    if (this.elements.bgLoadButton) this.elements.bgLoadButton.disabled = true;
     this._enableFilterControls(false);
     this._clearFilter();
   }
@@ -416,6 +445,7 @@ export class ViewerApp {
     this.elements.refreshButton.disabled = false;
     this.elements.searchToggleButton.disabled = false;
     this.elements.searchInput.disabled = false;
+    if (this.elements.bgLoadButton) this.elements.bgLoadButton.disabled = false;
     this._enableFilterControls(true);
     this._showStatus("");
 
@@ -447,121 +477,279 @@ export class ViewerApp {
 
   // ─── Map loading ─────────────────────────────────────────────────────────────
 
-  async _startFullMapLoad(forceRefresh = false) {
+  // Called on login / session restore.  Restores from cache if available,
+  // then demand-loads any visible chunks that aren't already cached.
+  async _initMapLoad() {
     if (!this.session) return;
 
-    // Abort any in-progress load
+    const uid     = this.session.user.userid;
+    const worldid = this.session.map?.worldid || "";
+    const cellsKey  = buildFullMapCacheKey(uid, worldid);
+    const chunksKey = buildLoadedChunksCacheKey(uid, worldid);
+
+    try {
+      const [cachedCells, cachedChunks] = await Promise.all([
+        sessionCacheGet(cellsKey),
+        sessionCacheGet(chunksKey),
+      ]);
+
+      if (cachedCells?.cells?.length > 0) {
+        this.renderer.clearCells();
+        this.renderer.ingestCells(cachedCells.cells);
+        this._loadedChunks = new Set(cachedChunks?.chunks ?? []);
+        this._hideOverlay();
+        this._updateSearchEntries();
+        this._updateFilterCount();
+        this._autoFindHome();
+        this._showProgress(
+          `Restored from cache — ${this._loadedChunks.size} chunks loaded. Pan to explore; use ↺ to reset.`,
+          this._loadedChunks.size,
+          this._loadedChunks.size,
+        );
+        setTimeout(() => this._hideProgress(), 3000);
+        // Load any viewport gaps not already in the chunk cache
+        await this._loadViewport();
+        return;
+      }
+    } catch { /* no cache or error — fresh load */ }
+
+    // No cache: center on stored home position if known, then load the viewport
+    this._loadedChunks = new Set();
+    this._centerOnStoredHome();
+    this._showOverlay("Loading area around your base...");
+    await this._loadViewport();
+  }
+
+  // Refresh button (↺): clears cache, returns to home, reloads viewport only.
+  async _refreshMap() {
+    if (!this.session) return;
+
+    if (this._bgAbortController) {
+      this._bgAbortController.abort();
+      this._bgAbortController = null;
+      this._bgLoadActive = false;
+      this._setBgLoadButtonState(false);
+    }
     if (this._loadAbortController) {
       this._loadAbortController.abort();
       this._loadAbortController = null;
     }
 
-    const cacheKey = buildFullMapCacheKey(this.session.user.userid, this.session.map?.worldid || "");
+    const uid     = this.session.user.userid;
+    const worldid = this.session.map?.worldid || "";
+    try {
+      await Promise.all([
+        sessionCacheDelete(buildFullMapCacheKey(uid, worldid)),
+        sessionCacheDelete(buildLoadedChunksCacheKey(uid, worldid)),
+      ]);
+    } catch { /* ignore */ }
 
-    if (!forceRefresh) {
-      // Restore from IndexedDB cache.  If the cache exists, show it and stop —
-      // no background reload.  The user can click ↺ to fetch fresh data.
-      try {
-        const cached = await sessionCacheGet(cacheKey);
-        if (cached?.cells?.length > 0) {
-          this.renderer.clearCells();
-          this.renderer.ingestCells(cached.cells);
-          this._hideOverlay();
-          this._updateSearchEntries();
-          this._updateFilterCount();
-          this._autoFindHome();
-          this._showProgress(
-            `Loaded from cache — ${cached.cells.length.toLocaleString()} cells. Use ↺ to fetch fresh data from server.`,
-            cached.cells.length,
-            cached.cells.length,
-          );
-          setTimeout(() => this._hideProgress(), 2500);
-          return; // done — no server requests needed
-        }
-      } catch {
-        // Cache miss or error — fall through to full load below
-      }
-    } else {
-      // Force refresh: wipe the renderer and clear the saved cache
-      this.renderer.clearCells();
-      try { await sessionCacheDelete(cacheKey); } catch { /* ignore */ }
+    this._loadedChunks  = new Set();
+    this._pendingChunks = new Set();
+    this.renderer.clearCells();
+    this.selectedCell = null;
+
+    this._centerOnStoredHome();
+    this._showOverlay("Reloading area around your base...");
+    await this._loadViewport();
+  }
+
+  // Demand-loads chunks currently visible in the viewport that haven't been
+  // fetched yet.  Called on login, pan, zoom, and after refresh.
+  async _loadViewport() {
+    if (!this.session || !this.renderer) return;
+
+    if (this._loadAbortController) {
+      this._loadAbortController.abort();
     }
-
-    // ── Full load from server via /worldmapv2/getarea (10x10 chunks) ─────────
-    // TODO: swap to generateAllCellIds + getMapCells once
-    //       /worldmapv2/getcellsforviewer is deployed on the server.
-    this._showOverlay(forceRefresh ? "Reloading map from server..." : "Loading map...");
     this._loadAbortController = new AbortController();
     const signal = this._loadAbortController.signal;
 
-    const chunks = generateChunkCoords();
-    const total  = chunks.length;
-    this._loadTotal = total;
+    const visibleKeys = this.renderer.getVisibleChunkKeys(2);
+    const toLoad = [...visibleKeys].filter(
+      k => !this._loadedChunks.has(k) && !this._pendingChunks.has(k)
+    );
+
+    if (!toLoad.length) {
+      this._hideOverlay();
+      return;
+    }
+
+    this._loadTotal = toLoad.length;
     this._loadDone  = 0;
-    this._loadInProgress = true;
+    this._showProgress("Loading...", 0, toLoad.length);
 
-    this._showProgress("Loading map...", 0, total);
-
-    const sem   = new Semaphore(MR2.concurrency);
+    const sem   = new Semaphore(8);
     const token = this.session.token;
 
-    const loadChunk = async ({ x, y }) => {
-      if (signal.aborted) return;
-      await sem.acquire();
-      if (signal.aborted) { sem.release(); return; }
+    await Promise.all(toLoad.map(key => this._fetchChunk(key, token, sem, signal, false)));
 
-      try {
-        const result = await this.api.getMapArea(token, x, y);
-        if (!signal.aborted && result?.data) {
-          this.renderer.ingestArea(result.data);
-        }
-      } catch {
-        // Individual chunk errors are silently ignored; map remains partial
-      } finally {
-        sem.release();
-        if (!signal.aborted) {
-          this._loadDone++;
-          this._showProgress(
-            this._loadDone < total ? "Loading map..." : "Map loaded.",
-            this._loadDone,
-            total,
-          );
-          if (this._loadDone === total) {
-            this._loadInProgress = false;
-            this._onMapLoadComplete();
-          }
-        }
-      }
-    };
+    if (!signal.aborted) {
+      this._hideOverlay();
+      this._updateSearchEntries();
+      this._updateFilterCount();
+      this._autoFindHome();
+      this._persistCellsDebounced();
+      setTimeout(() => this._hideProgress(), 1500);
+    }
+  }
 
-    Promise.all(chunks.map(loadChunk)).then(() => {
-      if (!signal.aborted && this._loadDone < total) {
-        this._loadInProgress = false;
-        this._onMapLoadComplete();
+  // Core chunk fetch used by both viewport and background loaders.
+  async _fetchChunk(key, token, sem, signal, isBg) {
+    if (signal.aborted || this._loadedChunks.has(key)) return;
+
+    this._pendingChunks.add(key);
+    await sem.acquire();
+    if (signal.aborted) { sem.release(); this._pendingChunks.delete(key); return; }
+
+    const [x, y] = key.split(",").map(Number);
+    try {
+      const result = await this.api.getMapArea(token, x, y);
+      if (!signal.aborted && result?.data) {
+        this.renderer.ingestArea(result.data);
+        this._loadedChunks.add(key);
+        this._persistChunksDebounced();
       }
+    } catch { /* silently skip failed chunks */ }
+    finally {
+      sem.release();
+      this._pendingChunks.delete(key);
+      if (!signal.aborted && !isBg) {
+        this._loadDone++;
+        this._showProgress("Loading...", this._loadDone, this._loadTotal);
+      }
+    }
+  }
+
+  // Background full-map load — low priority (concurrency 4), cancellable.
+  async _startBackgroundLoad() {
+    if (!this.session || this._bgLoadActive) return;
+
+    this._bgAbortController = new AbortController();
+    const signal = this._bgAbortController.signal;
+    this._bgLoadActive = true;
+    this._setBgLoadButtonState(true);
+
+    const allChunks = generateChunkCoords(); // sorted centre-out
+    const toLoad    = allChunks.filter(({ x, y }) => {
+      const k = `${x},${y}`;
+      return !this._loadedChunks.has(k) && !this._pendingChunks.has(k);
     });
+
+    const token  = this.session.token;
+    const sem    = new Semaphore(4);
+    let done = 0;
+    const total  = toLoad.length;
+
+    this._showProgress(`Background loading... 0 / ${total}`, 0, total);
+
+    await Promise.all(toLoad.map(async ({ x, y }) => {
+      if (signal.aborted) return;
+      const key = `${x},${y}`;
+      await this._fetchChunk(key, token, sem, signal, true);
+      if (!signal.aborted) {
+        done++;
+        if (done % 50 === 0 || done === total) {
+          this._showProgress(`Background loading... ${done} / ${total}`, done, total);
+        }
+      }
+    }));
+
+    this._bgLoadActive = false;
+    this._bgAbortController = null;
+    this._setBgLoadButtonState(false);
+
+    if (!signal.aborted) {
+      this._updateSearchEntries();
+      this._updateFilterCount();
+      this._persistCellsDebounced();
+      this._showProgress("Full map loaded.", total, total);
+      setTimeout(() => this._hideProgress(), 2500);
+    }
+  }
+
+  _stopBackgroundLoad() {
+    if (this._bgAbortController) {
+      this._bgAbortController.abort();
+      this._bgAbortController = null;
+    }
+    this._bgLoadActive = false;
+    this._setBgLoadButtonState(false);
+    this._hideProgress();
+  }
+
+  _toggleBackgroundLoad() {
+    if (this._bgLoadActive) {
+      this._stopBackgroundLoad();
+    } else {
+      this._startBackgroundLoad();
+    }
+  }
+
+  _setBgLoadButtonState(active) {
+    const btn = this.elements.bgLoadButton;
+    if (!btn) return;
+    btn.classList.toggle("map-control-button--active", active);
+    btn.title = active ? "Cancel background load" : "Load full map in background";
+    btn.setAttribute("aria-label", btn.title);
   }
 
   _onMapLoadComplete() {
+    // Kept for any future full-load path
     this._hideOverlay();
     this._updateSearchEntries();
     this._updateFilterCount();
     this._autoFindHome();
-
-    // Persist to IndexedDB cache
-    if (this.session) {
-      const cacheKey = buildFullMapCacheKey(this.session.user.userid, this.session.map?.worldid || "");
-      const cells = [...this.renderer.cells.values()];
-      sessionCacheSet(cacheKey, { cells, ts: Date.now() }).catch(() => {});
-    }
-
-    // Hide the progress bar after a short pause so the user sees "100%" briefly
+    this._persistCellsDebounced();
     setTimeout(() => this._hideProgress(), 2500);
   }
 
   _autoFindHome() {
     const home = this.renderer?.findHomeCell();
-    if (home) this.renderer.centerOn(home.x, home.y);
+    if (home) {
+      this._storeHomePos(home.x, home.y);
+      this.renderer.centerOn(home.x, home.y);
+    }
+  }
+
+  _storeHomePos(x, y) {
+    if (!this.session) return;
+    const key = buildHomePosKey(this.session.user.userid, this.session.map?.worldid || "");
+    localStorage.setItem(key, JSON.stringify({ x, y }));
+  }
+
+  _centerOnStoredHome() {
+    if (!this.renderer || !this.session) return;
+    const key = buildHomePosKey(this.session.user.userid, this.session.map?.worldid || "");
+    try {
+      const stored = JSON.parse(localStorage.getItem(key) || "null");
+      if (stored?.x != null && stored?.y != null) {
+        this.renderer.centerOn(stored.x, stored.y);
+        return;
+      }
+    } catch { /* ignore */ }
+    // No stored position — centre on the map
+    this.renderer.centerOn(MR2.mapWidth / 2, MR2.mapHeight / 2);
+  }
+
+  // Debounced IndexedDB saves — avoids hammering storage on every chunk
+  _persistChunksDebounced() {
+    clearTimeout(this._saveChunksTimer);
+    this._saveChunksTimer = setTimeout(() => {
+      if (!this.session) return;
+      const key = buildLoadedChunksCacheKey(this.session.user.userid, this.session.map?.worldid || "");
+      sessionCacheSet(key, { chunks: [...this._loadedChunks] }).catch(() => {});
+    }, 2000);
+  }
+
+  _persistCellsDebounced() {
+    clearTimeout(this._saveCellsTimer);
+    this._saveCellsTimer = setTimeout(() => {
+      if (!this.session) return;
+      const key   = buildFullMapCacheKey(this.session.user.userid, this.session.map?.worldid || "");
+      const cells = [...this.renderer.cells.values()];
+      sessionCacheSet(key, { cells, ts: Date.now() }).catch(() => {});
+    }, 3000);
   }
 
   // ─── Progress UI ─────────────────────────────────────────────────────────────

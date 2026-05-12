@@ -92,10 +92,12 @@ export class MapRenderer {
 
     this._dirty = true;
     this._rafId = null;
+    this._viewportChangeTimer = null;
 
-    this.onCellHover    = null;
-    this.onCellClick    = null;
-    this.onCoordsChange = null;
+    this.onCellHover      = null;
+    this.onCellClick      = null;
+    this.onCoordsChange   = null;
+    this.onViewportChanged = null;  // fires ~250ms after any pan/zoom
 
     this._bindEvents();
     this._scheduleRender();
@@ -148,6 +150,14 @@ export class MapRenderer {
     this.viewY = wy - pivotSY / this.zoom;
     this._clampView();
     this.markDirty();
+    this._scheduleViewportChange();
+  }
+
+  _scheduleViewportChange() {
+    clearTimeout(this._viewportChangeTimer);
+    this._viewportChangeTimer = setTimeout(() => {
+      if (this.onViewportChanged) this.onViewportChanged();
+    }, 250);
   }
 
   zoomIn()  { this.setZoom(this.zoom * ZOOM_STEP, this.canvas.clientWidth / 2, this.canvas.clientHeight / 2); }
@@ -166,9 +176,35 @@ export class MapRenderer {
 
   findHomeCell() {
     for (const cell of this.cells.values()) {
-      if (cell.mine === 1) return cell;
+      if (cell.mine === 1 && cell.b === MR2.cellTypes.HOMECELL) return cell;
     }
     return null;
+  }
+
+  // Returns a Set of "x,y" chunk-origin strings (multiples of 10) that are
+  // currently visible on screen, plus an optional buffer ring of extra chunks.
+  getVisibleChunkKeys(buffer = 2) {
+    const W    = this.canvas.clientWidth;
+    const H    = this.canvas.clientHeight;
+    const step = 10;
+
+    const startCY = Math.max(0, Math.floor(this.viewY / HV) - 1);
+    const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / this.zoom) / HV) + 1);
+    const startCX = Math.max(0, Math.floor(this.viewX / HW) - 2);
+    const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / this.zoom) / HW) + 2);
+
+    const chunkMinX = Math.max(0,                 Math.floor(startCX / step) * step - buffer * step);
+    const chunkMaxX = Math.min(MR2.mapWidth  - step, Math.floor(endCX   / step) * step + buffer * step);
+    const chunkMinY = Math.max(0,                 Math.floor(startCY / step) * step - buffer * step);
+    const chunkMaxY = Math.min(MR2.mapHeight - step, Math.floor(endCY   / step) * step + buffer * step);
+
+    const keys = new Set();
+    for (let y = chunkMinY; y <= chunkMaxY; y += step) {
+      for (let x = chunkMinX; x <= chunkMaxX; x += step) {
+        keys.add(`${x},${y}`);
+      }
+    }
+    return keys;
   }
 
   getCellAt(cx, cy) { return this.cells.get(cellKey(cx, cy)) ?? null; }
@@ -510,6 +546,7 @@ export class MapRenderer {
         this.viewY = this._dragViewY - dy / this.zoom;
         this._clampView();
         this.markDirty();
+        this._scheduleViewportChange();
       } else {
         const coord = this._screenToCell(sx, sy);
         if (this.onCoordsChange) this.onCoordsChange(coord?.x ?? null, coord?.y ?? null);

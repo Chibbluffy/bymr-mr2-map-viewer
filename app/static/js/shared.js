@@ -4,7 +4,9 @@ export const SERVER_SELECTION_STORAGE_KEY = "bym-mr2-viewer-server-selection";
 export const SESSION_CACHE_STORE_NAME = "entries";
 export const SESSION_CACHE_SESSION_KEY = "bym-mr2-viewer-session-id";
 export const FULL_MAP_CACHE_VERSION = 1;
-export const FULL_MAP_CACHE_KEY_PREFIX = "bym-mr2-viewer-full-map";
+export const FULL_MAP_CACHE_KEY_PREFIX    = "bym-mr2-viewer-full-map";
+export const LOADED_CHUNKS_CACHE_KEY_PREFIX = "bym-mr2-viewer-loaded-chunks";
+export const HOME_POS_STORAGE_KEY_PREFIX    = "bym-mr2-viewer-home-pos";
 export const SEARCH_RESULT_LIMIT = 80;
 
 export const DEFAULT_VIEWER_CONFIG = Object.freeze({
@@ -308,4 +310,12 @@ export async function sessionCacheDelete(key) {
 
 export function buildFullMapCacheKey(userId, worldId) {
   return `${FULL_MAP_CACHE_KEY_PREFIX}:v${FULL_MAP_CACHE_VERSION}:${userId}:${worldId}`;
+}
+
+export function buildLoadedChunksCacheKey(userId, worldId) {
+  return `${LOADED_CHUNKS_CACHE_KEY_PREFIX}:v${FULL_MAP_CACHE_VERSION}:${userId}:${worldId}`;
+}
+
+export function buildHomePosKey(userId, worldId) {
+  return `${HOME_POS_STORAGE_KEY_PREFIX}:${userId}:${worldId}`;
 }

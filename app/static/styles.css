@@ -682,3 +682,15 @@ button { cursor: pointer; }
   width: 36px;
   height: 36px;
 }
+
+.map-control-button--active {
+  border-color: var(--accent) !important;
+  background: var(--panel-strong) !important;
+  color: var(--accent-strong) !important;
+  animation: pulse-border 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(92, 184, 72, 0.4); }
+  50%       { box-shadow: 0 0 0 4px rgba(92, 184, 72, 0);  }
+}
