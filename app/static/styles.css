@@ -453,7 +453,19 @@ button { cursor: pointer; }
 .search-result-coords {
   color: var(--muted);
   font-size: 0.72rem;
-  margin-left: 6px;
+  margin-left: 4px;
+}
+
+.search-result-type {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(92, 184, 72, 0.12);
+  border: 1px solid rgba(92, 184, 72, 0.25);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  vertical-align: middle;
 }
 
 /* Filter panel specifics */

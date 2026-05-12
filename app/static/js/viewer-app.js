@@ -969,9 +969,26 @@ export class ViewerApp {
       return;
     }
 
-    this.searchMatches = this.searchEntries
-      .filter((c) => c.n && c.n.toLowerCase().includes(query))
-      .slice(0, SEARCH_RESULT_LIMIT);
+    // Search all loaded cells directly so we always find the home base if it
+    // is loaded, regardless of what getPlayerCells() happened to cache.
+    // Sort: home bases (b===2) first within each player, then outposts.
+    const all = [];
+    for (const cell of this.renderer.cells.values()) {
+      if (cell.uid > 0 && cell.n && cell.n.toLowerCase().includes(query)) {
+        all.push(cell);
+      }
+    }
+
+    all.sort((a, b) => {
+      // Home bases rise to the top
+      const aHome = a.b === MR2.cellTypes.HOMECELL ? 0 : 1;
+      const bHome = b.b === MR2.cellTypes.HOMECELL ? 0 : 1;
+      if (aHome !== bHome) return aHome - bHome;
+      // Then alphabetically by name
+      return (a.n || "").localeCompare(b.n || "");
+    });
+
+    this.searchMatches = all.slice(0, SEARCH_RESULT_LIMIT);
 
     if (!this.searchMatches.length) {
       results.innerHTML = `<div class="search-result-item muted">No results</div>`;
@@ -980,15 +997,19 @@ export class ViewerApp {
     }
 
     results.innerHTML = this.searchMatches
-      .map(
-        (c, i) => `
-        <button
-          class="search-result-item"
-          data-index="${i}"
-          type="button"
-        >${escapeHtml(c.n)} <span class="search-result-coords">(${c.x}, ${c.y})</span></button>
-      `,
-      )
+      .map((c, i) => {
+        const typeLabel = c.b === MR2.cellTypes.HOMECELL ? "Home"
+                        : c.b === MR2.cellTypes.OUTPOST  ? "Outpost"
+                        : "";
+        const typeBadge = typeLabel
+          ? `<span class="search-result-type">${typeLabel}</span>`
+          : "";
+        return `
+          <button class="search-result-item" data-index="${i}" type="button">
+            ${escapeHtml(c.n)} ${typeBadge}
+            <span class="search-result-coords">(${c.x}, ${c.y})</span>
+          </button>`;
+      })
       .join("");
 
     results.hidden = false;
