@@ -926,7 +926,7 @@ export class ViewerApp {
       <div class="detail-row"><span>Type</span><span>${escapeHtml(baseType)}</span></div>
       <div class="detail-row"><span>Level</span><span>${l ?? "?"}</span></div>
       ${terrainRow}
-      ${outpostCount > 0 ? `<div class="detail-row"><span>Outposts</span><span>${outpostCount}</span></div>` : ""}
+      ${outpostCount > 0 ? `<div class="detail-row"><span>Outposts</span><span>${this._formatOutpostCount(outpostCount)}</span></div>` : ""}
       ${showBonuses ? bonusRow("Tower bonus",    towerBonus)    : ""}
       ${showBonuses ? bonusRow("Resource bonus", resourceBonus) : ""}
       ${flingerLv > 0 ? `<div class="detail-row"><span>Flinger</span><span>Lv ${flingerLv} — ${flingerRange} cell reach</span></div>` : ""}
@@ -950,6 +950,17 @@ export class ViewerApp {
       if (cell.uid === uid && cell.b === MR2.cellTypes.OUTPOST) count++;
     }
     return count;
+  }
+
+  _isFullMapLoaded() {
+    // 800×800 map with 10×10 chunks = 6400 total chunks
+    return this._loadedChunks.size >= 6400;
+  }
+
+  _formatOutpostCount(count) {
+    if (this._isFullMapLoaded()) return String(count);
+    // Partial load — make it clear the count may be incomplete
+    return `${count} loaded`;
   }
 
   // ─── Search ───────────────────────────────────────────────────────────────────
