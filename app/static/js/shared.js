@@ -207,10 +207,28 @@ export async function fetchJson(url, options = {}) {
 
 // ─── Cell IDs for bulk viewer loading ────────────────────────────────────────
 
+// Generate 10x10 chunk origin coordinates sorted nearest-centre first.
+// Used by the current /worldmapv2/getarea loader (6 400 chunks total).
+// Switch to generateAllCellIds once /worldmapv2/getcellsforviewer is live.
+export function generateChunkCoords() {
+  const step = 10;
+  const cx = MR2.mapWidth  / 2;
+  const cy = MR2.mapHeight / 2;
+  const coords = [];
+  for (let y = 0; y < MR2.mapHeight; y += step) {
+    for (let x = 0; x < MR2.mapWidth; x += step) {
+      const dist = Math.hypot(x + step / 2 - cx, y + step / 2 - cy);
+      coords.push({ x, y, dist });
+    }
+  }
+  coords.sort((a, b) => a.dist - b.dist);
+  return coords;
+}
+
 // Generate all 640 000 cell IDs sorted by squared distance from centre.
-// Batches sent to /worldmapv2/getcellsforviewer load the player's home area
-// first.  Uses TypedArrays (~10 MB peak) to avoid GC pressure from 640 K JS
-// objects.  Returns 1-based IDs: id = y * WIDTH + x + 1.
+// Ready for /worldmapv2/getcellsforviewer once that endpoint is deployed.
+// Uses TypedArrays (~10 MB peak) to avoid GC pressure from 640 K JS objects.
+// Returns 1-based IDs: id = y * WIDTH + x + 1.
 export function generateAllCellIds() {
   const W = MR2.mapWidth, H = MR2.mapHeight;
   const cx = W / 2, cy = H / 2;

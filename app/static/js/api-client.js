@@ -77,7 +77,21 @@ export class ApiClient {
     });
   }
 
-  // Bulk cell fetch for the viewer — up to 20 000 1-based cell IDs per call.
+  // Current loader — 10x10 chunk via /worldmapv2/getarea.
+  // Returns { error, x, y, data: { [x]: { [y]: cellData } } }
+  async getMapArea(token, x, y) {
+    return fetchJson(buildBymUrl("/worldmapv2/getarea", null, this.config), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+      },
+      body: new URLSearchParams({ x: String(x), y: String(y), sendresources: "0" }),
+    });
+  }
+
+  // Future bulk loader — up to 20 000 1-based cell IDs per call.
+  // Swap _startFullMapLoad to use this once /worldmapv2/getcellsforviewer is deployed.
   // Returns { celldata: [{ x, y, ...fields }] }
   async getMapCells(token, cellIds) {
     return fetchJson(buildBymUrl("/worldmapv2/getcellsforviewer", null, this.config), {

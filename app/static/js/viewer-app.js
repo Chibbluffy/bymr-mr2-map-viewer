@@ -8,7 +8,7 @@ import {
   buildTokenStorageKey,
   buildFullMapCacheKey,
   escapeHtml,
-  generateAllCellIds,
+  generateChunkCoords,
   getLocalViewerConfig,
   getTerrainLabel,
   isWater,
@@ -487,21 +487,15 @@ export class ViewerApp {
       try { await sessionCacheDelete(cacheKey); } catch { /* ignore */ }
     }
 
-    // ── Full load from server via /worldmapv2/getcellsforviewer ──────────────
+    // ── Full load from server via /worldmapv2/getarea (10x10 chunks) ─────────
+    // TODO: swap to generateAllCellIds + getMapCells once
+    //       /worldmapv2/getcellsforviewer is deployed on the server.
     this._showOverlay(forceRefresh ? "Reloading map from server..." : "Loading map...");
     this._loadAbortController = new AbortController();
     const signal = this._loadAbortController.signal;
 
-    // All 640 000 cell IDs sorted from centre outward, sliced into 20 000-cell
-    // batches → 32 batches total instead of 6 400 chunk requests.
-    const BATCH_SIZE = 20_000;
-    const allIds  = generateAllCellIds();
-    const batches = [];
-    for (let i = 0; i < allIds.length; i += BATCH_SIZE) {
-      batches.push(allIds.slice(i, i + BATCH_SIZE));
-    }
-
-    const total = batches.length;
+    const chunks = generateChunkCoords();
+    const total  = chunks.length;
     this._loadTotal = total;
     this._loadDone  = 0;
     this._loadInProgress = true;
@@ -511,18 +505,18 @@ export class ViewerApp {
     const sem   = new Semaphore(MR2.concurrency);
     const token = this.session.token;
 
-    const loadBatch = async (cellIds) => {
+    const loadChunk = async ({ x, y }) => {
       if (signal.aborted) return;
       await sem.acquire();
       if (signal.aborted) { sem.release(); return; }
 
       try {
-        const result = await this.api.getMapCells(token, cellIds);
-        if (!signal.aborted && result?.celldata?.length) {
-          this.renderer.ingestCells(result.celldata);
+        const result = await this.api.getMapArea(token, x, y);
+        if (!signal.aborted && result?.data) {
+          this.renderer.ingestArea(result.data);
         }
       } catch {
-        // Individual batch errors are silently ignored; map remains partial
+        // Individual chunk errors are silently ignored; map remains partial
       } finally {
         sem.release();
         if (!signal.aborted) {
@@ -540,7 +534,7 @@ export class ViewerApp {
       }
     };
 
-    Promise.all(batches.map(loadBatch)).then(() => {
+    Promise.all(chunks.map(loadChunk)).then(() => {
       if (!signal.aborted && this._loadDone < total) {
         this._loadInProgress = false;
         this._onMapLoadComplete();
@@ -578,7 +572,7 @@ export class ViewerApp {
     loadProgress.hidden = false;
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     if (loadProgressBar) loadProgressBar.style.width = `${pct}%`;
-    if (loadProgressText) loadProgressText.textContent = `${message} ${done} / ${total} batches (${pct}%)`;
+    if (loadProgressText) loadProgressText.textContent = `${message} ${done} / ${total} chunks (${pct}%)`;
   }
 
   _hideProgress() {
