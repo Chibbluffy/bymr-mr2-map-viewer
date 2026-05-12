@@ -84,9 +84,6 @@ export class ViewerApp {
     this._saveChunksTimer = null;
     // Debounce timer for persisting cell data to IndexedDB
     this._saveCellsTimer  = null;
-    // Simple counters for the progress bar
-    this._loadTotal = 0;
-    this._loadDone  = 0;
 
     this.elements = {
       appRoot:            document.getElementById("app"),
@@ -599,11 +596,16 @@ export class ViewerApp {
              (Math.abs(bx - wcx) + Math.abs(by - wcy));
     });
 
-    this._loadTotal = toLoad.length;
-    this._loadDone  = 0;
+    // Local counters — each _loadViewport call owns its own progress state
+    // so concurrent/aborted calls can't corrupt each other's numbers.
+    let done = 0;
+    const total = toLoad.length;
+    const onProgress = () => {
+      done++;
+      this._showProgress(`Fetching chunks… ${done} / ${total}`, done, total);
+    };
 
-    const label = `Fetching ${toLoad.length} chunk${toLoad.length !== 1 ? "s" : ""}…`;
-    this._showProgress(label, 0, toLoad.length);
+    this._showProgress(`Fetching ${total} chunk${total !== 1 ? "s" : ""}…`, 0, total);
 
     const sem   = new Semaphore(8);
     const token = this.session.token;
@@ -611,7 +613,7 @@ export class ViewerApp {
     // Fire all, but skip queuing new work if the gate was cancelled
     await Promise.all(toLoad.map(key => {
       if (signal.aborted) return Promise.resolve();
-      return this._fetchChunk(key, token, sem, false);
+      return this._fetchChunk(key, token, sem, false, onProgress);
     }));
 
     if (!signal.aborted) {
@@ -625,7 +627,8 @@ export class ViewerApp {
 
   // Core chunk fetch.  Never aborted once started — abort logic lives in
   // _loadViewport's gate, not here.  Both viewport and background loaders use this.
-  async _fetchChunk(key, token, sem, isBg) {
+  // onProgress is an optional callback owned by the caller (not instance state).
+  async _fetchChunk(key, token, sem, isBg, onProgress = null) {
     if (this._loadedChunks.has(key) || this._pendingChunks.has(key)) return;
 
     this._pendingChunks.add(key);
@@ -643,14 +646,7 @@ export class ViewerApp {
     finally {
       sem.release();
       this._pendingChunks.delete(key);
-      if (!isBg) {
-        this._loadDone++;
-        this._showProgress(
-          `Fetching chunks… ${this._loadDone} / ${this._loadTotal}`,
-          this._loadDone,
-          this._loadTotal,
-        );
-      }
+      if (!isBg && onProgress) onProgress();
     }
   }
 
