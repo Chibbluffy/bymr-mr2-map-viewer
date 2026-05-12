@@ -581,12 +581,14 @@ export class ViewerApp {
       return;
     }
 
-    // Sort by distance from viewport centre so nearest chunks load first
+    // Sort by distance from viewport centre so nearest chunks load first.
+    // Convert viewport centre from world pixels to cell coordinates so it's
+    // on the same scale as the chunk origin keys (which are cell indices).
     const { viewX, viewY, zoom } = this.renderer;
-    const W   = this.renderer.canvas.clientWidth;
-    const H   = this.renderer.canvas.clientHeight;
-    const wcx = viewX + W / zoom / 2;
-    const wcy = viewY + H / zoom / 2;
+    const W    = this.renderer.canvas.clientWidth;
+    const H    = this.renderer.canvas.clientHeight;
+    const wcx  = (viewX + W / zoom / 2) / MR2.hexColStep;  // cell X
+    const wcy  = (viewY + H / zoom / 2) / MR2.hexRowStep;  // cell Y
     toLoad.sort((a, b) => {
       const [ax, ay] = a.split(",").map(Number);
       const [bx, by] = b.split(",").map(Number);
