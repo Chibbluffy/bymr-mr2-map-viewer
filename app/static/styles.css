@@ -468,6 +468,13 @@ button { cursor: pointer; }
   vertical-align: middle;
 }
 
+/* Partial: home base not loaded yet, jumping to outpost cluster centroid */
+.search-result-type--partial {
+  color: #ffb050;
+  background: rgba(255, 176, 80, 0.10);
+  border-color: rgba(255, 176, 80, 0.30);
+}
+
 /* Filter panel specifics */
 .filter-panel[hidden] { display: none !important; }
 

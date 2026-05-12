@@ -980,26 +980,60 @@ export class ViewerApp {
       return;
     }
 
-    // Search all loaded cells directly so we always find the home base if it
-    // is loaded, regardless of what getPlayerCells() happened to cache.
-    // Sort: home bases (b===2) first within each player, then outposts.
-    const all = [];
+    // One entry per player.  If their home base is loaded, jump there.
+    // Otherwise jump to the outpost closest to the centroid of their loaded
+    // outposts — this lands you in the middle of their cluster, from which
+    // their home base can usually be found by panning nearby.
+    const byPlayer = new Map();  // uid → { name, home, outposts[] }
     for (const cell of this.renderer.cells.values()) {
-      if (cell.uid > 0 && cell.n && cell.n.toLowerCase().includes(query)) {
-        all.push(cell);
+      if (!(cell.uid > 0 && cell.n)) continue;
+      if (!cell.n.toLowerCase().includes(query)) continue;
+
+      let entry = byPlayer.get(cell.uid);
+      if (!entry) {
+        entry = { uid: cell.uid, name: cell.n, home: null, outposts: [] };
+        byPlayer.set(cell.uid, entry);
+      }
+      if (cell.b === MR2.cellTypes.HOMECELL)      entry.home = cell;
+      else if (cell.b === MR2.cellTypes.OUTPOST)  entry.outposts.push(cell);
+    }
+
+    // Resolve each player to a single "jump target" cell + display metadata
+    const matches = [];
+    for (const entry of byPlayer.values()) {
+      if (entry.home) {
+        matches.push({
+          name:    entry.name,
+          cell:    entry.home,
+          hasHome: true,
+          outpostCount: entry.outposts.length,
+        });
+      } else if (entry.outposts.length > 0) {
+        // Outpost closest to the centroid = middle of their cluster
+        const cx = entry.outposts.reduce((s, o) => s + o.x, 0) / entry.outposts.length;
+        const cy = entry.outposts.reduce((s, o) => s + o.y, 0) / entry.outposts.length;
+        let best = entry.outposts[0];
+        let bestD = Infinity;
+        for (const op of entry.outposts) {
+          const d = (op.x - cx) ** 2 + (op.y - cy) ** 2;
+          if (d < bestD) { bestD = d; best = op; }
+        }
+        matches.push({
+          name:    entry.name,
+          cell:    best,
+          hasHome: false,
+          outpostCount: entry.outposts.length,
+        });
       }
     }
 
-    all.sort((a, b) => {
-      // Home bases rise to the top
-      const aHome = a.b === MR2.cellTypes.HOMECELL ? 0 : 1;
-      const bHome = b.b === MR2.cellTypes.HOMECELL ? 0 : 1;
-      if (aHome !== bHome) return aHome - bHome;
-      // Then alphabetically by name
-      return (a.n || "").localeCompare(b.n || "");
+    // Sort: home-known players first, then alphabetically
+    matches.sort((a, b) => {
+      if (a.hasHome !== b.hasHome) return a.hasHome ? -1 : 1;
+      return a.name.localeCompare(b.name);
     });
 
-    this.searchMatches = all.slice(0, SEARCH_RESULT_LIMIT);
+    this.searchMatches = matches.slice(0, SEARCH_RESULT_LIMIT);
 
     if (!this.searchMatches.length) {
       results.innerHTML = `<div class="search-result-item muted">No results</div>`;
@@ -1008,17 +1042,14 @@ export class ViewerApp {
     }
 
     results.innerHTML = this.searchMatches
-      .map((c, i) => {
-        const typeLabel = c.b === MR2.cellTypes.HOMECELL ? "Home"
-                        : c.b === MR2.cellTypes.OUTPOST  ? "Outpost"
-                        : "";
-        const typeBadge = typeLabel
-          ? `<span class="search-result-type">${typeLabel}</span>`
-          : "";
+      .map((m, i) => {
+        const badge = m.hasHome
+          ? `<span class="search-result-type">Home</span>`
+          : `<span class="search-result-type search-result-type--partial">~ ${m.outpostCount} outpost${m.outpostCount === 1 ? "" : "s"}</span>`;
         return `
           <button class="search-result-item" data-index="${i}" type="button">
-            ${escapeHtml(c.n)} ${typeBadge}
-            <span class="search-result-coords">(${c.x}, ${c.y})</span>
+            ${escapeHtml(m.name)} ${badge}
+            <span class="search-result-coords">(${m.cell.x}, ${m.cell.y})</span>
           </button>`;
       })
       .join("");
@@ -1027,16 +1058,16 @@ export class ViewerApp {
 
     results.querySelectorAll(".search-result-item[data-index]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const idx = parseInt(btn.dataset.index, 10);
-        const cell = this.searchMatches[idx];
-        if (cell) {
-          this._jumpTo(cell.x, cell.y);
-          this.selectedCell = cell;
-          this.renderer.selectedCell = cell;
+        const idx   = parseInt(btn.dataset.index, 10);
+        const match = this.searchMatches[idx];
+        if (match) {
+          this._jumpTo(match.cell.x, match.cell.y);
+          this.selectedCell = match.cell;
+          this.renderer.selectedCell = match.cell;
           this.renderer.markDirty();
-          this._renderDetails(cell);
+          this._renderDetails(match.cell);
           results.hidden = true;
-          this.elements.searchInput.value = cell.n;
+          this.elements.searchInput.value = match.name;
         }
       });
     });
