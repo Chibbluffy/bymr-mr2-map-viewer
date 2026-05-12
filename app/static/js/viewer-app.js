@@ -559,15 +559,23 @@ export class ViewerApp {
 
   // Demand-loads chunks currently visible in the viewport that haven't been
   // fetched yet.  Called on login, pan, zoom, and after refresh.
+  //
+  // Key design: in-flight fetches are NEVER aborted mid-request.  Aborting
+  // removes a key from _pendingChunks without adding it to _loadedChunks,
+  // which leaves a permanent gap in the map.  Instead we only cancel the
+  // queue gate (so we stop dispatching new requests from the old call), while
+  // letting any already-started requests finish and commit their data.
   async _loadViewport() {
     if (!this.session || !this.renderer) return;
 
+    // Cancel the previous queue gate only — does NOT abort in-flight fetches
     if (this._loadAbortController) {
       this._loadAbortController.abort();
     }
     this._loadAbortController = new AbortController();
     const signal = this._loadAbortController.signal;
 
+    // Snapshot the visible area right now
     const visibleKeys = this.renderer.getVisibleChunkKeys(2);
     const toLoad = [...visibleKeys].filter(
       k => !this._loadedChunks.has(k) && !this._pendingChunks.has(k)
@@ -578,14 +586,33 @@ export class ViewerApp {
       return;
     }
 
+    // Sort by distance from viewport centre so nearest chunks load first
+    const { viewX, viewY, zoom } = this.renderer;
+    const W   = this.renderer.canvas.clientWidth;
+    const H   = this.renderer.canvas.clientHeight;
+    const wcx = viewX + W / zoom / 2;
+    const wcy = viewY + H / zoom / 2;
+    toLoad.sort((a, b) => {
+      const [ax, ay] = a.split(",").map(Number);
+      const [bx, by] = b.split(",").map(Number);
+      return (Math.abs(ax - wcx) + Math.abs(ay - wcy)) -
+             (Math.abs(bx - wcx) + Math.abs(by - wcy));
+    });
+
     this._loadTotal = toLoad.length;
     this._loadDone  = 0;
-    this._showProgress("Loading...", 0, toLoad.length);
+
+    const label = `Fetching ${toLoad.length} chunk${toLoad.length !== 1 ? "s" : ""}…`;
+    this._showProgress(label, 0, toLoad.length);
 
     const sem   = new Semaphore(8);
     const token = this.session.token;
 
-    await Promise.all(toLoad.map(key => this._fetchChunk(key, token, sem, signal, false)));
+    // Fire all, but skip queuing new work if the gate was cancelled
+    await Promise.all(toLoad.map(key => {
+      if (signal.aborted) return Promise.resolve();
+      return this._fetchChunk(key, token, sem, false);
+    }));
 
     if (!signal.aborted) {
       this._hideOverlay();
@@ -596,18 +623,18 @@ export class ViewerApp {
     }
   }
 
-  // Core chunk fetch used by both viewport and background loaders.
-  async _fetchChunk(key, token, sem, signal, isBg) {
-    if (signal.aborted || this._loadedChunks.has(key)) return;
+  // Core chunk fetch.  Never aborted once started — abort logic lives in
+  // _loadViewport's gate, not here.  Both viewport and background loaders use this.
+  async _fetchChunk(key, token, sem, isBg) {
+    if (this._loadedChunks.has(key) || this._pendingChunks.has(key)) return;
 
     this._pendingChunks.add(key);
     await sem.acquire();
-    if (signal.aborted) { sem.release(); this._pendingChunks.delete(key); return; }
 
     const [x, y] = key.split(",").map(Number);
     try {
       const result = await this.api.getMapArea(token, x, y);
-      if (!signal.aborted && result?.data) {
+      if (result?.data) {
         this.renderer.ingestArea(result.data);
         this._loadedChunks.add(key);
         this._persistChunksDebounced();
@@ -616,9 +643,13 @@ export class ViewerApp {
     finally {
       sem.release();
       this._pendingChunks.delete(key);
-      if (!signal.aborted && !isBg) {
+      if (!isBg) {
         this._loadDone++;
-        this._showProgress("Loading...", this._loadDone, this._loadTotal);
+        this._showProgress(
+          `Fetching chunks… ${this._loadDone} / ${this._loadTotal}`,
+          this._loadDone,
+          this._loadTotal,
+        );
       }
     }
   }
@@ -648,7 +679,7 @@ export class ViewerApp {
     await Promise.all(toLoad.map(async ({ x, y }) => {
       if (signal.aborted) return;
       const key = `${x},${y}`;
-      await this._fetchChunk(key, token, sem, signal, true);
+      await this._fetchChunk(key, token, sem, true);
       if (!signal.aborted) {
         done++;
         if (done % 50 === 0 || done === total) {
@@ -691,9 +722,14 @@ export class ViewerApp {
   _setBgLoadButtonState(active) {
     const btn = this.elements.bgLoadButton;
     if (!btn) return;
-    btn.classList.toggle("map-control-button--active", active);
-    btn.title = active ? "Cancel background load" : "Load full map in background";
+    btn.classList.toggle("bg-load-button--active", active);
+    btn.setAttribute("aria-pressed", String(active));
+    btn.title = active
+      ? "Cancel background load"
+      : "Load the entire 800×800 map in the background";
     btn.setAttribute("aria-label", btn.title);
+    const label = btn.querySelector(".bg-load-label");
+    if (label) label.textContent = active ? "Stop loading" : "Load full map";
   }
 
   _onMapLoadComplete() {

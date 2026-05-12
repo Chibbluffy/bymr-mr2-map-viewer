@@ -683,14 +683,74 @@ button { cursor: pointer; }
   height: 36px;
 }
 
-.map-control-button--active {
+/* Groups ↺ and "Load full map" side by side with a shared border radius */
+.map-control-group {
+  display: flex;
+  gap: 0;
+}
+
+.map-control-group > *:first-child {
+  border-radius: 10px 0 0 10px;
+}
+
+.map-control-group > *:last-child {
+  border-radius: 0 10px 10px 0;
+  border-left: none;
+}
+
+/* Labeled pill button for background load */
+.bg-load-button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 36px;
+  padding: 0 12px 0 8px;
+  background: rgba(8, 14, 8, 0.88);
+  color: var(--muted);
+  border: 1px solid var(--panel-border);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.bg-load-button:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.bg-load-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bg-load-icon {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
+/* Active (loading) state — green accent + pulsing */
+.bg-load-button--active {
   border-color: var(--accent) !important;
-  background: var(--panel-strong) !important;
   color: var(--accent-strong) !important;
+  background: rgba(92, 184, 72, 0.12) !important;
   animation: pulse-border 1.8s ease-in-out infinite;
+}
+
+.bg-load-button--active .bg-load-icon {
+  animation: spin 1.2s linear infinite;
 }
 
 @keyframes pulse-border {
   0%, 100% { box-shadow: 0 0 0 0 rgba(92, 184, 72, 0.4); }
   50%       { box-shadow: 0 0 0 4px rgba(92, 184, 72, 0);  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }

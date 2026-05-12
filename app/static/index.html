@@ -269,18 +269,37 @@
           <div id="map-overlay" class="map-overlay" data-message="Loading..."></div>
 
           <div class="map-controls" aria-label="Map controls">
-            <button
-              id="refresh-button"
-              class="icon-button map-control-button"
-              type="button"
-              aria-label="Refresh world map"
-              title="Reload map from server"
-              disabled
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 5a7 7 0 1 1-6.65 9.18 1 1 0 1 1 1.9-.62A5 5 0 1 0 8 8.58V11a1 1 0 0 1-1.7.71l-3-3a1 1 0 0 1 0-1.42l3-3A1 1 0 0 1 8 5v1.46A6.96 6.96 0 0 1 12 5Z" />
-              </svg>
-            </button>
+            <!-- Reload + background-load group -->
+            <div class="map-control-group">
+              <button
+                id="refresh-button"
+                class="icon-button map-control-button"
+                type="button"
+                aria-label="Refresh map area"
+                title="Reload area around home base (clears cache)"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5a7 7 0 1 1-6.65 9.18 1 1 0 1 1 1.9-.62A5 5 0 1 0 8 8.58V11a1 1 0 0 1-1.7.71l-3-3a1 1 0 0 1 0-1.42l3-3A1 1 0 0 1 8 5v1.46A6.96 6.96 0 0 1 12 5Z" />
+                </svg>
+              </button>
+              <button
+                id="bg-load-button"
+                class="bg-load-button"
+                type="button"
+                aria-label="Load full map in background"
+                aria-pressed="false"
+                title="Load the entire 800×800 map in the background"
+                disabled
+              >
+                <svg class="bg-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 14.5v-9l6 4.5-6 4.5Z" />
+                </svg>
+                <span class="bg-load-label">Load full map</span>
+              </button>
+            </div>
+
+            <!-- Navigation group -->
             <button
               id="find-home-button"
               class="icon-button map-control-button"
@@ -299,7 +318,7 @@
               type="button"
               aria-label="Zoom out"
               title="Zoom out (-)"
-            >-</button>
+            >−</button>
             <button
               id="zoom-in-button"
               class="icon-button map-control-button"
@@ -307,18 +326,6 @@
               aria-label="Zoom in"
               title="Zoom in (+)"
             >+</button>
-            <button
-              id="bg-load-button"
-              class="icon-button map-control-button"
-              type="button"
-              aria-label="Load full map in background"
-              title="Load full map in background"
-              disabled
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 14.5v-9l6 4.5-6 4.5Z" />
-              </svg>
-            </button>
           </div>
         </section>
       </main>

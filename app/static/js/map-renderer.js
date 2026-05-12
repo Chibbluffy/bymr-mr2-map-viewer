@@ -198,14 +198,20 @@ export class MapRenderer {
     const startCY = Math.max(0, Math.floor(this.viewY / RS) - 1);
     const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / this.zoom) / RS) + 2);
 
-    const chunkMinX = Math.max(0,                   Math.floor(startCX / step) * step - buffer * step);
+    // Use floor for min (round inward) and floor for max too, but add buffer
+    // chunks on top.  Clamp max to the last valid chunk origin (map size - step).
+    const chunkMinX = Math.max(0,                    Math.floor(startCX / step) * step - buffer * step);
     const chunkMaxX = Math.min(MR2.mapWidth  - step, Math.floor(endCX   / step) * step + buffer * step);
-    const chunkMinY = Math.max(0,                   Math.floor(startCY / step) * step - buffer * step);
+    const chunkMinY = Math.max(0,                    Math.floor(startCY / step) * step - buffer * step);
     const chunkMaxY = Math.min(MR2.mapHeight - step, Math.floor(endCY   / step) * step + buffer * step);
 
+    // Grow by one extra step to catch partial chunks at the visible edge
+    const safeMaxX = Math.min(MR2.mapWidth  - step, chunkMaxX + step);
+    const safeMaxY = Math.min(MR2.mapHeight - step, chunkMaxY + step);
+
     const keys = new Set();
-    for (let y = chunkMinY; y <= chunkMaxY; y += step) {
-      for (let x = chunkMinX; x <= chunkMaxX; x += step) {
+    for (let y = chunkMinY; y <= safeMaxY; y += step) {
+      for (let x = chunkMinX; x <= safeMaxX; x += step) {
         keys.add(`${x},${y}`);
       }
     }
