@@ -26,9 +26,12 @@ export const STABLE_VIEWER_CONFIG = Object.freeze({
 export const MR2 = {
   mapWidth:  800,
   mapHeight: 800,
-  hexWidth:  104,
-  hexHeight: 68,
-  hexVStep:  50,   // vertical step between rows (hexHeight - overlap)
+  // Flat-top hex orientation (straight edges on top/bottom, points left/right)
+  hexWidth:   104,  // full drawn width  (left point → right point)
+  hexHeight:  68,   // full drawn height (top flat → bottom flat)
+  hexColStep: 78,   // horizontal centre-to-centre distance = hexWidth * 3/4
+  hexRowStep: 68,   // vertical   centre-to-centre distance = hexHeight
+  hexColOffset: 34, // odd-column vertical shift = hexHeight / 2
   // No server-side rate limit on /worldmapv2/getcellsforviewer
   concurrency: 30,
   // Terrain height thresholds (MapRoomCell.as Update() / Terrain enum)
@@ -52,14 +55,15 @@ export const MR2 = {
   },
 };
 
-// Hex floor vertices (same as MR3 viewer's FLOOR_HEX_VERTICES)
+// Flat-top hex vertices: straight edges on top/bottom, points on left/right.
+// Bounding box 104 wide × 68 tall; vertices listed clockwise from upper-left.
 export const HEX_VERTICES = [
-  [52, 3],
-  [101, 19],
-  [101, 49],
-  [52, 65],
-  [3, 49],
-  [3, 19],
+  [26,  0],   // upper-left  (W/4,   0)
+  [78,  0],   // upper-right (3W/4,  0)
+  [104, 34],  // right point (W,     H/2)
+  [78,  68],  // lower-right (3W/4,  H)
+  [26,  68],  // lower-left  (W/4,   H)
+  [0,   34],  // left point  (0,     H/2)
 ];
 
 // ─── Terrain → tile asset path ───────────────────────────────────────────────

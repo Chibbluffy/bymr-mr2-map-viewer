@@ -1,10 +1,12 @@
 import { MR2, HEX_VERTICES, cellKey, getTileDef, isWater } from "./shared.js";
 
 // ─── Geometry constants ───────────────────────────────────────────────────────
-
-const HW = MR2.hexWidth;   // 104
-const HH = MR2.hexHeight;  // 68
-const HV = MR2.hexVStep;   // 50  (vertical step between rows)
+// Flat-top hex grid: offset columns (odd columns shift down by half hex height).
+const HW  = MR2.hexWidth;      // 104 — full drawn width
+const HH  = MR2.hexHeight;     // 68  — full drawn height
+const CS  = MR2.hexColStep;    // 78  — horizontal centre-to-centre (HW * 3/4)
+const RS  = MR2.hexRowStep;    // 68  — vertical   centre-to-centre (= HH)
+const CO  = MR2.hexColOffset;  // 34  — odd-column downward shift  (HH / 2)
 
 const MIN_ZOOM    = 0.008;
 const MAX_ZOOM    = 12;
@@ -31,21 +33,22 @@ const COL_DIM_FILL    = "rgba(0,0,0,0.35)";
 
 // ─── Hex helpers ─────────────────────────────────────────────────────────────
 
+// Flat-top column-offset grid: odd columns shift down by CO.
 function cellToWorld(cx, cy) {
   return {
-    x: cx * HW + (cy % 2 !== 0 ? HW / 2 : 0),
-    y: cy * HV,
+    x: cx * CS,
+    y: cy * RS + (cx % 2 !== 0 ? CO : 0),
   };
 }
 
 function worldToCell(wx, wy) {
-  const approxRow = Math.round(wy / HV);
-  const offset    = approxRow % 2 !== 0 ? HW / 2 : 0;
-  const approxCol = Math.round((wx - offset) / HW);
+  const approxCol = Math.round(wx / CS);
+  const offset    = approxCol % 2 !== 0 ? CO : 0;
+  const approxRow = Math.round((wy - offset) / RS);
 
   let best = null, bestDist = Infinity;
-  for (let dr = -1; dr <= 1; dr++) {
-    for (let dc = -2; dc <= 2; dc++) {
+  for (let dc = -2; dc <= 2; dc++) {
+    for (let dr = -1; dr <= 1; dr++) {
       const c = approxCol + dc, r = approxRow + dr;
       if (c < 0 || c >= MR2.mapWidth || r < 0 || r >= MR2.mapHeight) continue;
       const { x: wx2, y: wy2 } = cellToWorld(c, r);
@@ -75,9 +78,9 @@ export class MapRenderer {
     this.ctx    = canvas.getContext("2d");
 
     this.cells   = new Map();
-    this.zoom    = 0.06;
-    this.viewX   = (MR2.mapWidth  * HW) / 2 - canvas.clientWidth  / (2 * this.zoom);
-    this.viewY   = (MR2.mapHeight * HV) / 2 - canvas.clientHeight / (2 * this.zoom);
+    this.zoom    = 0.25;
+    this.viewX   = (MR2.mapWidth  * CS) / 2 - canvas.clientWidth  / (2 * this.zoom);
+    this.viewY   = (MR2.mapHeight * RS + CO) / 2 - canvas.clientHeight / (2 * this.zoom);
 
     this.hoveredCell  = null;
     this.selectedCell = null;
@@ -139,6 +142,8 @@ export class MapRenderer {
     this.viewY = y + HH / 2 - this.canvas.clientHeight / (2 * this.zoom);
     this._clampView();
     this.markDirty();
+    // Don't fire onViewportChanged here — centering is an intentional jump,
+    // not a user pan, and demand-loading is handled by the caller.
   }
 
   setZoom(newZoom, pivotSX, pivotSY) {
@@ -188,14 +193,14 @@ export class MapRenderer {
     const H    = this.canvas.clientHeight;
     const step = 10;
 
-    const startCY = Math.max(0, Math.floor(this.viewY / HV) - 1);
-    const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / this.zoom) / HV) + 1);
-    const startCX = Math.max(0, Math.floor(this.viewX / HW) - 2);
-    const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / this.zoom) / HW) + 2);
+    const startCX = Math.max(0, Math.floor(this.viewX / CS) - 2);
+    const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / this.zoom) / CS) + 2);
+    const startCY = Math.max(0, Math.floor(this.viewY / RS) - 1);
+    const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / this.zoom) / RS) + 2);
 
-    const chunkMinX = Math.max(0,                 Math.floor(startCX / step) * step - buffer * step);
+    const chunkMinX = Math.max(0,                   Math.floor(startCX / step) * step - buffer * step);
     const chunkMaxX = Math.min(MR2.mapWidth  - step, Math.floor(endCX   / step) * step + buffer * step);
-    const chunkMinY = Math.max(0,                 Math.floor(startCY / step) * step - buffer * step);
+    const chunkMinY = Math.max(0,                   Math.floor(startCY / step) * step - buffer * step);
     const chunkMaxY = Math.min(MR2.mapHeight - step, Math.floor(endCY   / step) * step + buffer * step);
 
     const keys = new Set();
@@ -310,28 +315,27 @@ export class MapRenderer {
 
     const useRect     = zoom < RECT_ZOOM;
     const rw          = HW * zoom + 1;  // +1 fills sub-pixel gaps between cells
-    const rh          = HV * zoom + 1;
+    const rh          = HH * zoom + 1;
     const filterActive = this._hasActiveFilter();
 
-    // Visible cell range
-    const startCY = Math.max(0, Math.floor(this.viewY / HV) - 1);
-    const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / zoom) / HV) + 1);
-    const startCX = Math.max(0, Math.floor(this.viewX / HW) - 2);
-    const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / zoom) / HW) + 2);
+    // Visible cell range — column-offset grid uses CS (col step) and RS (row step)
+    const startCX = Math.max(0, Math.floor(this.viewX / CS) - 2);
+    const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / zoom) / CS) + 2);
+    const startCY = Math.max(0, Math.floor(this.viewY / RS) - 1);
+    const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / zoom) / RS) + 2);
 
     // ── Single pass: collect positions into colour-keyed buckets ─────────────
-    // Flat arrays [sx, sy, sx, sy, ...] per fill style — minimal allocation.
-    const terrain = new Map();  // fillColor  → number[]
-    const overlay = new Map();  // fillColor  → number[]
-    const fDim    = [];         // filter dim positions
-    const fHit    = [];         // filter hit positions
+    const terrain = new Map();
+    const overlay = new Map();
+    const fDim    = [];
+    const fHit    = [];
 
-    for (let cy = startCY; cy <= endCY; cy++) {
-      const offset = cy % 2 !== 0 ? HW / 2 : 0;
-      for (let cx = startCX; cx <= endCX; cx++) {
+    for (let cx = startCX; cx <= endCX; cx++) {
+      const colOff = cx % 2 !== 0 ? CO : 0;
+      for (let cy = startCY; cy <= endCY; cy++) {
         const cell = this.cells.get(cellKey(cx, cy));
-        const sx = (cx * HW + offset - this.viewX) * zoom;
-        const sy = (cy * HV - this.viewY) * zoom;
+        const sx = (cx * CS - this.viewX) * zoom;
+        const sy = (cy * RS + colOff - this.viewY) * zoom;
 
         // Terrain
         const fill = getTileDef(cell?.i ?? 0).fill;
@@ -390,20 +394,20 @@ export class MapRenderer {
       fillBucket(COL_FILTER_FILL, fHit);
     }
 
-    // ── Hover / selected (single hex — still fast, < 2 cells) ────────────────
+    // ── Hover / selected ─────────────────────────────────────────────────────
     if (this.hoveredCell) {
       const { x: cx, y: cy } = this.hoveredCell;
-      const offset = cy % 2 !== 0 ? HW / 2 : 0;
-      hexPath(ctx, (cx * HW + offset - this.viewX) * zoom, (cy * HV - this.viewY) * zoom, zoom);
+      const { x: wx, y: wy } = cellToWorld(cx, cy);
+      hexPath(ctx, (wx - this.viewX) * zoom, (wy - this.viewY) * zoom, zoom);
       ctx.fillStyle = COL_HOVER_FILL;
       ctx.fill();
     }
 
     if (this.selectedCell) {
       const { x: cx, y: cy } = this.selectedCell;
-      const offset = cy % 2 !== 0 ? HW / 2 : 0;
-      const sx = (cx * HW + offset - this.viewX) * zoom;
-      const sy = (cy * HV - this.viewY) * zoom;
+      const { x: wx, y: wy } = cellToWorld(cx, cy);
+      const sx = (wx - this.viewX) * zoom;
+      const sy = (wy - this.viewY) * zoom;
       hexPath(ctx, sx, sy, zoom);
       ctx.fillStyle = COL_SELECTED_FL;
       ctx.fill();
@@ -412,16 +416,16 @@ export class MapRenderer {
       ctx.stroke();
     }
 
-    // ── Grid lines: single batched stroke() above threshold ──────────────────
+    // ── Grid lines ───────────────────────────────────────────────────────────
     if (zoom >= GRID_ZOOM) {
       ctx.strokeStyle = "rgba(0,0,0,0.18)";
       ctx.lineWidth   = 0.5;
       ctx.beginPath();
-      for (let cy = startCY; cy <= endCY; cy++) {
-        const offset = cy % 2 !== 0 ? HW / 2 : 0;
-        for (let cx = startCX; cx <= endCX; cx++) {
-          const sx = (cx * HW + offset - this.viewX) * zoom;
-          const sy = (cy * HV - this.viewY) * zoom;
+      for (let cx = startCX; cx <= endCX; cx++) {
+        const colOff = cx % 2 !== 0 ? CO : 0;
+        for (let cy = startCY; cy <= endCY; cy++) {
+          const sx = (cx * CS - this.viewX) * zoom;
+          const sy = (cy * RS + colOff - this.viewY) * zoom;
           ctx.moveTo(sx + zv[0], sy + zv[1]);
           ctx.lineTo(sx + zv[2], sy + zv[3]);
           ctx.lineTo(sx + zv[4], sy + zv[5]);
@@ -438,17 +442,17 @@ export class MapRenderer {
     if (zoom >= LABEL_ZOOM) {
       ctx.textAlign    = "center";
       ctx.textBaseline = "middle";
-      ctx.lineJoin     = "round";   // smooth corners on stroked letters
+      ctx.lineJoin     = "round";
       const hwPx = HW * zoom;
       const hhPx = HH * zoom;
 
-      for (let cy = startCY; cy <= endCY; cy++) {
-        const offset = cy % 2 !== 0 ? HW / 2 : 0;
-        for (let cx = startCX; cx <= endCX; cx++) {
+      for (let cx = startCX; cx <= endCX; cx++) {
+        const colOff = cx % 2 !== 0 ? CO : 0;
+        for (let cy = startCY; cy <= endCY; cy++) {
           const cell = this.cells.get(cellKey(cx, cy));
           if (!cell || isWater(cell.i ?? 0) || !cell.n) continue;
-          const sx = (cx * HW + offset - this.viewX) * zoom + hwPx / 2;
-          const sy = (cy * HV - this.viewY) * zoom + hhPx / 2;
+          const sx = (cx * CS - this.viewX) * zoom + hwPx / 2;
+          const sy = (cy * RS + colOff - this.viewY) * zoom + hhPx / 2;
           const isHomeLabel = cell.b === MR2.cellTypes.HOMECELL;
 
           // White text with dark outline — readable on any overlay colour.
@@ -474,25 +478,32 @@ export class MapRenderer {
             ctx.fillStyle = "rgba(255,255,255,0.82)";
             ctx.fillText(`Lv ${cell.l ?? "?"}`,   sx, sy + hhPx * 0.15);
           } else {
+            // Name — shift up slightly to make room for level below
             ctx.font      = `bold ${Math.min(hhPx * 0.22, 11)}px "Trebuchet MS", sans-serif`;
             ctx.lineWidth = 2;
             ctx.strokeStyle = "rgba(0,0,0,0.88)";
-            ctx.strokeText(cell.n.substring(0, 8), sx, sy);
+            ctx.strokeText(cell.n.substring(0, 8), sx, sy - hhPx * 0.1);
             ctx.fillStyle = nameColor;
-            ctx.fillText(cell.n.substring(0, 8),   sx, sy);
+            ctx.fillText(cell.n.substring(0, 8),   sx, sy - hhPx * 0.1);
+            // Level
+            ctx.font      = `${Math.min(hhPx * 0.18, 9)}px "Trebuchet MS", sans-serif`;
+            ctx.strokeText(`Lv ${cell.l ?? "?"}`, sx, sy + hhPx * 0.15);
+            ctx.fillStyle = "rgba(255,255,255,0.82)";
+            ctx.fillText(`Lv ${cell.l ?? "?"}`,   sx, sy + hhPx * 0.15);
           }
         }
       }
     }
 
     // ── Map border ────────────────────────────────────────────────────────────
+    // Total world extent: columns span CS * mapWidth + extra quarter; rows RS * mapHeight + CO for odd-col offset
     ctx.strokeStyle = "rgba(100,160,255,0.40)";
     ctx.lineWidth   = 2;
     ctx.strokeRect(
       -this.viewX * zoom,
       -this.viewY * zoom,
-      MR2.mapWidth * HW * zoom,
-      (MR2.mapHeight * HV + HH - HV) * zoom,
+      (MR2.mapWidth  * CS + HW / 4) * zoom,
+      (MR2.mapHeight * RS + CO)     * zoom,
     );
   }
 
@@ -504,7 +515,8 @@ export class MapRenderer {
 
   _clampView() {
     const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
-    const mapW = MR2.mapWidth * HW, mapH = MR2.mapHeight * HV + HH - HV;
+    const mapW = MR2.mapWidth  * CS + HW / 4;
+    const mapH = MR2.mapHeight * RS + CO;
     const m = 0.2;
     this.viewX = Math.max(-(W / this.zoom) * m, Math.min(this.viewX, mapW + (W / this.zoom) * m - W / this.zoom));
     this.viewY = Math.max(-(H / this.zoom) * m, Math.min(this.viewY, mapH + (H / this.zoom) * m - H / this.zoom));
