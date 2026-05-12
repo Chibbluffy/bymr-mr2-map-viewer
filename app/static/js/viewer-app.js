@@ -513,11 +513,14 @@ export class ViewerApp {
       }
     } catch { /* no cache or error — fresh load */ }
 
-    // No cache: center on stored home position if known, then load the viewport
+    // No cache: center on stored home position if known, then load the viewport.
+    // After the first load completes, try to center on the actual home cell now
+    // that it's in the renderer — only done once here, never during panning.
     this._loadedChunks = new Set();
     this._centerOnStoredHome();
     this._showOverlay("Loading area around your base...");
     await this._loadViewport();
+    this._autoFindHome();
   }
 
   // Refresh button (↺): clears cache, returns to home, reloads viewport only.
@@ -588,7 +591,6 @@ export class ViewerApp {
       this._hideOverlay();
       this._updateSearchEntries();
       this._updateFilterCount();
-      this._autoFindHome();
       this._persistCellsDebounced();
       setTimeout(() => this._hideProgress(), 1500);
     }
