@@ -127,6 +127,12 @@ export class ViewerApp {
   }
 
   async start() {
+    // Move dropdown elements to <body> so position:fixed works with viewport coords.
+    // backdrop-filter on .map-tool-panel creates a new containing block for fixed
+    // descendants, making getBoundingClientRect() offsets wrong when they're inside it.
+    [this.elements.searchResults, this.elements.filterPlayerResults]
+      .forEach(el => { if (el) document.body.appendChild(el); });
+
     this._setupServerSelector();
     this._initConfig();
     this.api = new ApiClient(this.config);
@@ -317,7 +323,11 @@ export class ViewerApp {
       const panel = document.getElementById("search-panel");
       searchToggleButton.setAttribute("aria-expanded", String(!expanded));
       if (panel) panel.hidden = expanded;
-      if (!expanded) searchInput?.focus();
+      if (!expanded) {
+        searchInput?.focus();
+      } else {
+        if (this.elements.searchResults) this.elements.searchResults.hidden = true;
+      }
     });
 
     searchInput?.addEventListener("input", () => this._onSearchInput());
@@ -1094,7 +1104,11 @@ export class ViewerApp {
       this.filterOpen = !this.filterOpen;
       filterPanel.hidden = !this.filterOpen;
       filterToggleButton.setAttribute("aria-expanded", String(this.filterOpen));
-      if (this.filterOpen) filterPlayerInput?.focus();
+      if (this.filterOpen) {
+        filterPlayerInput?.focus();
+      } else {
+        if (this.elements.filterPlayerResults) this.elements.filterPlayerResults.hidden = true;
+      }
     });
 
     filterPlayerInput?.addEventListener("input", () => {
@@ -1123,13 +1137,16 @@ export class ViewerApp {
 
     this._setupBonusRanges();
 
-    // Close filter panel if user clicks outside
+    // Close filter panel if user clicks outside.
+    // filterPlayerResults is now a body-level portal so check it separately.
     document.addEventListener("click", (e) => {
       if (!this.filterOpen) return;
       const bar = document.querySelector(".map-tool-bar");
-      if (bar && !bar.contains(e.target)) {
+      const fpResults = this.elements.filterPlayerResults;
+      if (bar && !bar.contains(e.target) && !fpResults?.contains(e.target)) {
         this.filterOpen = false;
         if (filterPanel) filterPanel.hidden = true;
+        if (fpResults) fpResults.hidden = true;
         filterToggleButton?.setAttribute("aria-expanded", "false");
       }
     }, true);
