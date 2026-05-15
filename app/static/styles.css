@@ -320,14 +320,14 @@ button { cursor: pointer; }
 .swatch-rock   { background: #7a7868; }
 
 /* Occupant overlays */
-.swatch-mine-home  { background: rgba(0,  232, 255, 0.90); }   /* my home base  — vivid cyan      */
-.swatch-mine-out   { background: rgba(0,  170, 230, 0.60); }   /* my outpost    — softer cyan      */
-.swatch-other-home { background: rgba(255,  70,   0, 0.90); }  /* enemy home    — vivid orange-red */
-.swatch-other-out  { background: rgba(255, 180,   0, 0.60); }  /* enemy outpost — amber            */
-.swatch-wm         { background: rgba(200,200,200,0.55); }  /* tribe — light gray tint */
+.swatch-mine-home  { background: rgba(0,   232, 255, 0.90); }  /* mine  — home   — vivid cyan    */
+.swatch-mine-out   { background: rgba(0,   170, 230, 0.60); }  /* mine  — outpost — softer cyan  */
+.swatch-other-home { background: rgba(255, 210,  30, 0.90); }  /* other — home   — golden yellow */
+.swatch-other-out  { background: rgba(255, 130,   0, 0.65); }  /* other — outpost — orange       */
+.swatch-wm         { background: rgba(200, 200, 200, 0.55); }  /* wild tribe — light gray tint   */
 
 /* Filter */
-.swatch-filter { background: rgba(220, 30, 30, 0.85); }
+.swatch-filter { background: rgba(60, 220, 80, 0.85); }
 .swatch-dim    { background: rgba(0, 0, 0, 0.55); border: 1px solid rgba(255,255,255,0.1); }
 
 /* ── Sidebar toggle ───────────────────────────────────────────────────────── */

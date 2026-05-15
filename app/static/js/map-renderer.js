@@ -18,18 +18,41 @@ const GRID_ZOOM   = 0.15;  // below this, skip grid lines
 // Below this zoom hexes are < 8 px wide; fillRect is faster and looks identical.
 const RECT_ZOOM = 0.08;
 
-// Cell overlay colours
+// ─── Cell overlay colour palette ─────────────────────────────────────────────
+// Five distinct hue families so colours stay distinguishable even under the
+// COL_DIM_FILL overlay.  Hue families reserved for future states are noted
+// below so expansion doesn't require a full palette rethink.
+//
+//  CYAN    — mine (home + outpost)
+//  YELLOW  — neutral other players' home bases
+//  ORANGE  — neutral other players' outposts
+//  GRAY    — wild monster tribes
+//  GREEN   — filter match highlight  ← shift to MAGENTA when alliance added
+//
+//  Reserved for future relationship colours:
+//    GREEN   — alliance members (home + outpost)  → at that point move filter to MAGENTA
+//    PURPLE  — truced players   (home + outpost)
+//    MAGENTA — filter match (post-alliance)
+
 const COL_MINE              = "#00e8ff";
-const COL_MINE_HOME_FILL    = "rgba(0,232,255,0.88)";    // my home base  — vivid cyan
-const COL_MINE_OUT_FILL     = "rgba(0,170,230,0.50)";    // my outpost    — softer blue-cyan
-const COL_OTHER_HOME_FILL   = "rgba(255,70,0,0.88)";     // enemy home    — vivid orange-red
-const COL_OTHER_OUT_FILL    = "rgba(255,180,0,0.45)";    // enemy outpost — amber
-const COL_WM_FILL           = "rgba(200,200,200,0.35)";  // wild tribe    — light gray tint
+const COL_MINE_HOME_FILL    = "rgba(0,232,255,0.88)";    // mine  — home   — vivid cyan
+const COL_MINE_OUT_FILL     = "rgba(0,170,230,0.50)";    // mine  — post   — softer blue-cyan
+const COL_OTHER_HOME_FILL   = "rgba(255,210,30,0.90)";   // other — home   — golden yellow
+const COL_OTHER_OUT_FILL    = "rgba(255,130,0,0.55)";    // other — post   — orange
+const COL_WM_FILL           = "rgba(200,200,200,0.35)";  // wild tribe     — light gray tint
+
+// Future: alliance home/outpost → green; truce home/outpost → purple
+// const COL_ALLY_HOME_FILL  = "rgba(40,210,100,0.88)";
+// const COL_ALLY_OUT_FILL   = "rgba(40,180,80,0.50)";
+// const COL_TRUCE_HOME_FILL = "rgba(180,80,255,0.82)";
+// const COL_TRUCE_OUT_FILL  = "rgba(160,60,220,0.48)";
+
 const COL_HOVER_FILL  = "rgba(255,255,255,0.20)";
 const COL_SELECTED_ST = "rgba(255,210,0,0.92)";
 const COL_SELECTED_FL = "rgba(255,210,0,0.30)";
-const COL_FILTER_FILL = "rgba(220,30,30,0.65)";
-const COL_DIM_FILL    = "rgba(0,0,0,0.35)";
+// Filter highlight — green today; swap to rgba(255,50,200,0.70) when alliance (green) is added
+const COL_FILTER_FILL = "rgba(60,220,80,0.72)";
+const COL_DIM_FILL    = "rgba(0,0,0,0.38)";
 
 // ─── Hex helpers ─────────────────────────────────────────────────────────────
 
