@@ -367,21 +367,32 @@ button { cursor: pointer; }
   position: absolute;
   top: 14px;
   right: 14px;
+  /* Stop well above the map controls (bottom:14px + ~36px height = 50px from bottom).
+     60px gives 10px of breathing room. */
+  bottom: 60px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 8px;
   z-index: 6;
+  /* The bar now covers a large transparent area — don't swallow map clicks. */
+  pointer-events: none;
 }
+
+/* Re-enable pointer events on every direct child */
+.map-tool-bar > * { pointer-events: auto; }
 
 /* The two toggle buttons sit side by side */
 .map-tool-buttons {
   display: flex;
+  flex-shrink: 0;
   gap: 8px;
 }
 
-/* Panels flow side by side — no absolute positioning so they can never overlap */
+/* Panels row fills whatever height remains after the button row */
 .map-panels-row {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: row;
   align-items: flex-start;
@@ -401,10 +412,10 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 12px;
-  /* Prevent the panel from growing behind the map controls at the bottom.
-     The tool-bar sits at top:14px + ~44px of buttons = ~58px from top.
-     Map controls sit 50px from the bottom. 120px covers both with a buffer. */
-  max-height: calc(100dvh - 120px);
+  /* max-height is 100% of .map-panels-row, which is itself constrained by
+     the bar's bottom:60px — so this reliably stays above the map controls
+     regardless of viewport size or content length. */
+  max-height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
