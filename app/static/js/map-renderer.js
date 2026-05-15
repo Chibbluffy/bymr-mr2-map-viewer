@@ -265,8 +265,8 @@ export class MapRenderer {
 
   _hasActiveFilter() {
     if (!this.filter) return false;
-    const { playerName, filterPlayerUid, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } = this.filter;
-    return !!(playerName || filterPlayerUid || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels?.size);
+    const { playerName, filterPlayerUids, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } = this.filter;
+    return !!(playerName || filterPlayerUids?.size || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels?.size);
   }
 
   _cellMatchesFilter(cell) {
@@ -278,9 +278,9 @@ export class MapRenderer {
     // Within each group the check is OR (any selected value matches).
 
     // ── Player filter ────────────────────────────────────────────────────────
-    // Uid match (exact) when a suggestion was selected; substring on free text.
-    if (f.filterPlayerUid) {
-      if (cell.uid !== f.filterPlayerUid) return false;
+    // Uid-set match when players are pinned; substring fallback for free text.
+    if (f.filterPlayerUids?.size) {
+      if (!f.filterPlayerUids.has(cell.uid)) return false;
     } else if (f.playerName) {
       if (!(cell.uid > 0 && cell.n && cell.n.toLowerCase().includes(f.playerName))) return false;
     }

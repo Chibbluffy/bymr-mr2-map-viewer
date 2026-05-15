@@ -190,17 +190,20 @@
                 <div class="filter-section">
                   <p class="filter-section-title">Player</p>
                   <div class="search-shell">
-                    <input
-                      id="filter-player-input"
-                      class="search-input"
-                      type="search"
-                      placeholder="Type to search players…"
-                      autocomplete="off"
-                      spellcheck="false"
-                    >
+                    <div id="filter-player-tags-area" class="filter-player-tags-area">
+                      <!-- player chips injected here by JS -->
+                      <input
+                        id="filter-player-input"
+                        class="filter-player-input"
+                        type="text"
+                        placeholder="Type to add players…"
+                        autocomplete="off"
+                        spellcheck="false"
+                      >
+                    </div>
                     <div id="filter-player-results" class="search-results" hidden></div>
                   </div>
-                  <p class="filter-help">Highlights all cells owned by this player.</p>
+                  <p class="filter-help">Highlights all cells owned by selected players.</p>
                 </div>
 
                 <div class="filter-section">

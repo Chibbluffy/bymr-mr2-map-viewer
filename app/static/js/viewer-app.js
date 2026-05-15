@@ -69,7 +69,7 @@ export class ViewerApp {
     this.searchActiveIndex = -1;
     this.serverSelection = null;
     this.filterOpen = false;
-    this._filterPlayerUid = null;  // set when a suggestion is selected; null = substring match
+    this._filterPlayers = new Map();  // uid → name; drives multi-player highlight
 
     // ── Demand-load state ────────────────────────────────────────────────────
     // Set of "x,y" chunk-origin strings already fetched this session
@@ -1098,9 +1098,13 @@ export class ViewerApp {
     });
 
     filterPlayerInput?.addEventListener("input", () => {
-      this._filterPlayerUid = null;  // free-text → back to substring match
       this._applyFilter();
       this._showFilterPlayerSuggestions();
+    });
+
+    // Clicking anywhere on the tags area (not on a chip) focuses the text input
+    document.getElementById("filter-player-tags-area")?.addEventListener("click", (e) => {
+      if (!e.target.closest(".filter-player-chip")) filterPlayerInput?.focus();
     });
 
     // Hide suggestions when input loses focus (small delay so click registers)
@@ -1131,6 +1135,32 @@ export class ViewerApp {
     }, true);
   }
 
+  _renderFilterPlayerChips() {
+    const area = document.getElementById("filter-player-tags-area");
+    const input = this.elements.filterPlayerInput;
+    if (!area || !input) return;
+
+    // Remove existing chips, leave the input intact
+    area.querySelectorAll(".filter-player-chip").forEach((el) => el.remove());
+
+    for (const [uid, name] of this._filterPlayers) {
+      const chip = document.createElement("span");
+      chip.className = "filter-player-chip";
+      chip.innerHTML =
+        `<span class="filter-player-chip-name">${escapeHtml(name)}</span>` +
+        `<button class="filter-player-chip-remove" type="button" aria-label="Remove ${escapeHtml(name)}" data-uid="${uid}">×</button>`;
+      area.insertBefore(chip, input);
+
+      chip.querySelector("button").addEventListener("click", () => {
+        this._filterPlayers.delete(uid);
+        this._renderFilterPlayerChips();
+        this._applyFilter();
+      });
+    }
+
+    input.placeholder = this._filterPlayers.size > 0 ? "Add more…" : "Type to add players…";
+  }
+
   _showFilterPlayerSuggestions() {
     const { filterPlayerInput, filterPlayerResults } = this.elements;
     if (!filterPlayerInput || !filterPlayerResults) return;
@@ -1141,8 +1171,9 @@ export class ViewerApp {
       return;
     }
 
+    // Exclude players already in the chip list
     const matches = this.searchEntries
-      .filter((c) => c.n && c.n.toLowerCase().includes(query))
+      .filter((c) => c.n && c.n.toLowerCase().includes(query) && !this._filterPlayers.has(c.uid))
       .slice(0, 20);
 
     if (!matches.length) {
@@ -1159,8 +1190,11 @@ export class ViewerApp {
 
     filterPlayerResults.querySelectorAll(".search-result-item").forEach((btn) => {
       btn.addEventListener("click", () => {
-        filterPlayerInput.value = btn.dataset.name;
-        this._filterPlayerUid = Number(btn.dataset.uid) || null;
+        const uid  = Number(btn.dataset.uid) || null;
+        const name = btn.dataset.name;
+        if (uid) this._filterPlayers.set(uid, name);
+        this._renderFilterPlayerChips();
+        filterPlayerInput.value = "";
         filterPlayerResults.hidden = true;
         this._applyFilter();
       });
@@ -1255,7 +1289,9 @@ export class ViewerApp {
   // ── Filter apply / clear ───────────────────────────────────────────────────
 
   _applyFilter() {
-    const playerName = (this.elements.filterPlayerInput?.value ?? "").trim().toLowerCase();
+    // Uid set takes precedence; fall back to free-text substring when no players pinned
+    const filterPlayerUids = this._filterPlayers.size > 0 ? new Set(this._filterPlayers.keys()) : null;
+    const playerName = filterPlayerUids ? "" : (this.elements.filterPlayerInput?.value ?? "").trim().toLowerCase();
 
     const baseTypes = new Set();
     document.querySelectorAll("#filter-base-options input[type=checkbox]:checked")
@@ -1272,9 +1308,8 @@ export class ViewerApp {
     document.querySelectorAll("#filter-flinger-options input[type=checkbox]:checked")
       .forEach((cb) => flingerLevels.add(Number(cb.value)));
 
-    const filterPlayerUid = this._filterPlayerUid;
-    const hasAny = playerName || filterPlayerUid || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels.size;
-    this.renderer?.setFilter(hasAny ? { playerName, filterPlayerUid, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } : null);
+    const hasAny = playerName || filterPlayerUids || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels.size;
+    this.renderer?.setFilter(hasAny ? { playerName, filterPlayerUids, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } : null);
 
     this._updateFilterCount();
   }
@@ -1282,7 +1317,8 @@ export class ViewerApp {
   _clearFilter() {
     if (this.elements.filterPlayerInput) this.elements.filterPlayerInput.value = "";
     if (this.elements.filterPlayerResults) this.elements.filterPlayerResults.hidden = true;
-    this._filterPlayerUid = null;
+    this._filterPlayers = new Map();
+    this._renderFilterPlayerChips();
     document.querySelectorAll("#filter-base-options input[type=checkbox], #filter-terrain-options input[type=checkbox], #filter-flinger-options input[type=checkbox]")
       .forEach((cb) => { cb.checked = false; });
     this._resetBonusRange("tower-bonus-min",    "tower-bonus-max",    "tower-bonus-fill",    "tower-bonus-min-label",    "tower-bonus-max-label");

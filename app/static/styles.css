@@ -546,6 +546,79 @@ button { cursor: pointer; }
   margin: 0;
 }
 
+/* ── Multi-player chip input ──────────────────────────────────────────────── */
+
+.filter-player-tags-area {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  min-height: 34px;
+  cursor: text;
+}
+
+.filter-player-tags-area:focus-within {
+  outline: 1px solid var(--accent);
+}
+
+.filter-player-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(92, 184, 72, 0.12);
+  border: 1px solid rgba(92, 184, 72, 0.30);
+  border-radius: 4px;
+  padding: 1px 3px 1px 7px;
+  font-size: 0.74rem;
+  color: var(--accent-strong);
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+.filter-player-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filter-player-chip-remove {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s, color 0.1s;
+}
+
+.filter-player-chip-remove:hover {
+  background: rgba(92, 184, 72, 0.22);
+  color: #fff;
+}
+
+.filter-player-input {
+  flex: 1;
+  min-width: 80px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 0.82rem;
+  padding: 2px 0;
+}
+
+.filter-player-input::placeholder { color: var(--muted); }
+
 /* ── Dual-handle range sliders ────────────────────────────────────────────── */
 
 .filter-range-values {
