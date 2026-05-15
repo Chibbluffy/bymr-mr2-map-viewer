@@ -243,8 +243,8 @@ export class MapRenderer {
 
   _hasActiveFilter() {
     if (!this.filter) return false;
-    const { playerName, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange } = this.filter;
-    return !!(playerName || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange);
+    const { playerName, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } = this.filter;
+    return !!(playerName || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels?.size);
   }
 
   _cellMatchesFilter(cell) {
@@ -289,6 +289,13 @@ export class MapRenderer {
       const res     = Math.round(100 * ALT_AVG / i - 100);
       if (f.towerBonusRange    && !(tower >= f.towerBonusRange.min    && tower <= f.towerBonusRange.max))    return false;
       if (f.resourceBonusRange && !(res   >= f.resourceBonusRange.min && res   <= f.resourceBonusRange.max)) return false;
+    }
+
+    // ── Flinger level — outposts only ────────────────────────────────────────
+    if (f.flingerLevels?.size) {
+      if (cell.b !== MR2.cellTypes.OUTPOST) return false;
+      const flingerLv = Number(cell.f) || 0;
+      if (!f.flingerLevels.has(flingerLv)) return false;
     }
 
     return true;

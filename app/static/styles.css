@@ -506,6 +506,12 @@ button { cursor: pointer; }
   gap: 6px;
 }
 
+.filter-options--inline {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
 .filter-option {
   display: flex;
   align-items: center;

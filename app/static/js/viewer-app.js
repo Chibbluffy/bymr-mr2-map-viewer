@@ -1253,8 +1253,12 @@ export class ViewerApp {
     const towerBonusRange    = this._readBonusRange("tower-bonus-min",    "tower-bonus-max");
     const resourceBonusRange = this._readBonusRange("resource-bonus-min", "resource-bonus-max");
 
-    const hasAny = playerName || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange;
-    this.renderer?.setFilter(hasAny ? { playerName, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange } : null);
+    const flingerLevels = new Set();
+    document.querySelectorAll("#filter-flinger-options input[type=checkbox]:checked")
+      .forEach((cb) => flingerLevels.add(Number(cb.value)));
+
+    const hasAny = playerName || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels.size;
+    this.renderer?.setFilter(hasAny ? { playerName, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } : null);
 
     this._updateFilterCount();
   }
@@ -1262,7 +1266,7 @@ export class ViewerApp {
   _clearFilter() {
     if (this.elements.filterPlayerInput) this.elements.filterPlayerInput.value = "";
     if (this.elements.filterPlayerResults) this.elements.filterPlayerResults.hidden = true;
-    document.querySelectorAll("#filter-base-options input[type=checkbox], #filter-terrain-options input[type=checkbox]")
+    document.querySelectorAll("#filter-base-options input[type=checkbox], #filter-terrain-options input[type=checkbox], #filter-flinger-options input[type=checkbox]")
       .forEach((cb) => { cb.checked = false; });
     this._resetBonusRange("tower-bonus-min",    "tower-bonus-max",    "tower-bonus-fill",    "tower-bonus-min-label",    "tower-bonus-max-label");
     this._resetBonusRange("resource-bonus-min", "resource-bonus-max", "resource-bonus-fill", "resource-bonus-min-label", "resource-bonus-max-label");
