@@ -433,16 +433,15 @@ button { cursor: pointer; }
 .search-input:focus { outline: 1px solid var(--accent); }
 
 .search-results {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
+  /* position:fixed so it's never clipped by an ancestor overflow:auto container.
+     top/left/width are set in JS via getBoundingClientRect() before each show. */
+  position: fixed;
   background: var(--panel);
   border: 1px solid var(--panel-border);
   border-radius: 8px;
   max-height: 200px;
   overflow-y: auto;
-  z-index: 20;
+  z-index: 100;
   box-shadow: 0 4px 20px var(--shadow);
 }
 

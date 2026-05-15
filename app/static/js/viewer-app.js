@@ -69,6 +69,7 @@ export class ViewerApp {
     this.searchActiveIndex = -1;
     this.serverSelection = null;
     this.filterOpen = false;
+    this._filterPlayerUid = null;  // set when a suggestion is selected; null = substring match
 
     // ── Demand-load state ────────────────────────────────────────────────────
     // Set of "x,y" chunk-origin strings already fetched this session
@@ -965,6 +966,15 @@ export class ViewerApp {
 
   // ─── Search ───────────────────────────────────────────────────────────────────
 
+  // Position a fixed-positioned dropdown below its anchor element.
+  // Must be called before unhiding the dropdown so the layout is correct.
+  _positionDropdown(dropdown, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    dropdown.style.top   = `${rect.bottom + 4}px`;
+    dropdown.style.left  = `${rect.left}px`;
+    dropdown.style.width = `${rect.width}px`;
+  }
+
   _updateSearchEntries() {
     if (!this.renderer) return;
     this.searchEntries = this.renderer.getPlayerCells();
@@ -1037,6 +1047,7 @@ export class ViewerApp {
 
     if (!this.searchMatches.length) {
       results.innerHTML = `<div class="search-result-item muted">No results</div>`;
+      this._positionDropdown(results, this.elements.searchInput);
       results.hidden = false;
       return;
     }
@@ -1054,6 +1065,7 @@ export class ViewerApp {
       })
       .join("");
 
+    this._positionDropdown(results, this.elements.searchInput);
     results.hidden = false;
 
     results.querySelectorAll(".search-result-item[data-index]").forEach((btn) => {
@@ -1086,6 +1098,7 @@ export class ViewerApp {
     });
 
     filterPlayerInput?.addEventListener("input", () => {
+      this._filterPlayerUid = null;  // free-text → back to substring match
       this._applyFilter();
       this._showFilterPlayerSuggestions();
     });
@@ -1138,14 +1151,16 @@ export class ViewerApp {
     }
 
     filterPlayerResults.innerHTML = matches
-      .map((c) => `<button class="search-result-item" data-name="${escapeHtml(c.n)}" type="button">${escapeHtml(c.n)}</button>`)
+      .map((c) => `<button class="search-result-item" data-name="${escapeHtml(c.n)}" data-uid="${c.uid}" type="button">${escapeHtml(c.n)}</button>`)
       .join("");
 
+    this._positionDropdown(filterPlayerResults, filterPlayerInput);
     filterPlayerResults.hidden = false;
 
     filterPlayerResults.querySelectorAll(".search-result-item").forEach((btn) => {
       btn.addEventListener("click", () => {
         filterPlayerInput.value = btn.dataset.name;
+        this._filterPlayerUid = Number(btn.dataset.uid) || null;
         filterPlayerResults.hidden = true;
         this._applyFilter();
       });
@@ -1257,8 +1272,9 @@ export class ViewerApp {
     document.querySelectorAll("#filter-flinger-options input[type=checkbox]:checked")
       .forEach((cb) => flingerLevels.add(Number(cb.value)));
 
-    const hasAny = playerName || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels.size;
-    this.renderer?.setFilter(hasAny ? { playerName, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } : null);
+    const filterPlayerUid = this._filterPlayerUid;
+    const hasAny = playerName || filterPlayerUid || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels.size;
+    this.renderer?.setFilter(hasAny ? { playerName, filterPlayerUid, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } : null);
 
     this._updateFilterCount();
   }
@@ -1266,6 +1282,7 @@ export class ViewerApp {
   _clearFilter() {
     if (this.elements.filterPlayerInput) this.elements.filterPlayerInput.value = "";
     if (this.elements.filterPlayerResults) this.elements.filterPlayerResults.hidden = true;
+    this._filterPlayerUid = null;
     document.querySelectorAll("#filter-base-options input[type=checkbox], #filter-terrain-options input[type=checkbox], #filter-flinger-options input[type=checkbox]")
       .forEach((cb) => { cb.checked = false; });
     this._resetBonusRange("tower-bonus-min",    "tower-bonus-max",    "tower-bonus-fill",    "tower-bonus-min-label",    "tower-bonus-max-label");
