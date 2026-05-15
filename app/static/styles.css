@@ -327,7 +327,7 @@ button { cursor: pointer; }
 .swatch-wm         { background: rgba(200, 200, 200, 0.55); }  /* wild tribe — light gray tint   */
 
 /* Filter */
-.swatch-filter { background: rgba(60, 220, 80, 0.85); }
+.swatch-filter { background: rgba(255, 50, 200, 0.85); }
 .swatch-dim    { background: rgba(0, 0, 0, 0.55); border: 1px solid rgba(255,255,255,0.1); }
 
 /* ── Sidebar toggle ───────────────────────────────────────────────────────── */

@@ -27,12 +27,11 @@ const RECT_ZOOM = 0.08;
 //  YELLOW  — neutral other players' home bases
 //  ORANGE  — neutral other players' outposts
 //  GRAY    — wild monster tribes
-//  GREEN   — filter match highlight  ← shift to MAGENTA when alliance added
+//  MAGENTA — filter match highlight
 //
 //  Reserved for future relationship colours:
-//    GREEN   — alliance members (home + outpost)  → at that point move filter to MAGENTA
-//    PURPLE  — truced players   (home + outpost)
-//    MAGENTA — filter match (post-alliance)
+//    GREEN  — alliance members (home + outpost)
+//    PURPLE — truced players   (home + outpost)
 
 const COL_MINE              = "#00e8ff";
 const COL_MINE_HOME_FILL    = "rgba(0,232,255,0.88)";    // mine  — home   — vivid cyan
@@ -50,8 +49,8 @@ const COL_WM_FILL           = "rgba(200,200,200,0.35)";  // wild tribe     — l
 const COL_HOVER_FILL  = "rgba(255,255,255,0.20)";
 const COL_SELECTED_ST = "rgba(255,210,0,0.92)";
 const COL_SELECTED_FL = "rgba(255,210,0,0.30)";
-// Filter highlight — green today; swap to rgba(255,50,200,0.70) when alliance (green) is added
-const COL_FILTER_FILL = "rgba(60,220,80,0.72)";
+// Filter highlight — magenta; distinct from all current and planned hue families
+const COL_FILTER_FILL = "rgba(255,50,200,0.72)";
 const COL_DIM_FILL    = "rgba(0,0,0,0.38)";
 
 // ─── Hex helpers ─────────────────────────────────────────────────────────────
