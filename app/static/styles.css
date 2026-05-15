@@ -401,7 +401,19 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Prevent the panel from growing behind the map controls at the bottom.
+     The tool-bar sits at top:14px + ~44px of buttons = ~58px from top.
+     Map controls sit 50px from the bottom. 120px covers both with a buffer. */
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-strong) transparent;
 }
+
+.map-tool-panel::-webkit-scrollbar { width: 4px; }
+.map-tool-panel::-webkit-scrollbar-track { background: transparent; }
+.map-tool-panel::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
 
 .map-tool-panel[hidden] { display: none !important; }
 
