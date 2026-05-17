@@ -70,6 +70,7 @@ export class ViewerApp {
     this.serverSelection = null;
     this.filterOpen = false;
     this._filterPlayers = new Map();  // uid → name; drives multi-player highlight
+    this._apiVersionLocked = false;   // true when user has manually pinned API version
 
     // ── Demand-load state ────────────────────────────────────────────────────
     // Set of "x,y" chunk-origin strings already fetched this session
@@ -122,7 +123,8 @@ export class ViewerApp {
       filterPlayerResults:  document.getElementById("filter-player-results"),
       filterClearButton:    document.getElementById("filter-clear-button"),
       filterMatchCount:     document.getElementById("filter-match-count"),
-      bgLoadButton:         document.getElementById("bg-load-button"),
+      bgLoadButton:            document.getElementById("bg-load-button"),
+      serverApiVersionInput:   document.getElementById("server-apiversion-input"),
     };
   }
 
@@ -170,7 +172,7 @@ export class ViewerApp {
           if (option) sel.value = this.serverSelection;
         }
         if (this.serverSelection === "custom") {
-          this._applyCustomServerConfig(parsed.host, parsed.port);
+          this._applyCustomServerConfig(parsed.host, parsed.port, parsed.apiVersion || "");
         } else if (this.serverSelection === "stable") {
           this.config = { ...STABLE_VIEWER_CONFIG };
         } else {
@@ -190,7 +192,7 @@ export class ViewerApp {
   }
 
   _setupServerSelector() {
-    const { serverSelect, serverCustomFields, serverHostInput, serverPortInput } = this.elements;
+    const { serverSelect, serverCustomFields, serverHostInput, serverPortInput, serverApiVersionInput } = this.elements;
     if (!serverSelect) return;
 
     serverSelect.addEventListener("change", () => {
@@ -199,7 +201,7 @@ export class ViewerApp {
       this._onServerSelectionChange(val);
     });
 
-    [serverHostInput, serverPortInput].forEach((input) => {
+    [serverHostInput, serverPortInput, serverApiVersionInput].forEach((input) => {
       if (input) {
         input.addEventListener("change", () => {
           this._onServerSelectionChange("custom");
@@ -212,14 +214,17 @@ export class ViewerApp {
     this.serverSelection = selection;
 
     if (selection === "stable") {
+      this._apiVersionLocked = false;
       this.config = setViewerConfig({ ...STABLE_VIEWER_CONFIG });
       localStorage.setItem(SERVER_SELECTION_STORAGE_KEY, JSON.stringify({ selection }));
     } else if (selection === "custom") {
-      const host = this.elements.serverHostInput?.value?.trim() || "127.0.0.1";
-      const port = this.elements.serverPortInput?.value || "3001";
-      this._applyCustomServerConfig(host, port);
-      localStorage.setItem(SERVER_SELECTION_STORAGE_KEY, JSON.stringify({ selection, host, port }));
+      const host       = this.elements.serverHostInput?.value?.trim() || "127.0.0.1";
+      const port       = this.elements.serverPortInput?.value || "3001";
+      const apiVersion = this.elements.serverApiVersionInput?.value?.trim() || "";
+      this._applyCustomServerConfig(host, port, apiVersion);
+      localStorage.setItem(SERVER_SELECTION_STORAGE_KEY, JSON.stringify({ selection, host, port, apiVersion }));
     } else {
+      this._apiVersionLocked = false;
       this.config = setViewerConfig(getLocalViewerConfig());
       localStorage.setItem(SERVER_SELECTION_STORAGE_KEY, JSON.stringify({ selection }));
     }
@@ -227,13 +232,27 @@ export class ViewerApp {
     this.api = new ApiClient(this.config);
   }
 
-  _applyCustomServerConfig(host, port) {
-    const base = `http://${host}:${port}`;
-    this.config = setViewerConfig({ bymBaseUrl: base, cdnBaseUrl: base });
-    if (this.elements.serverHostInput) this.elements.serverHostInput.value = host;
-    if (this.elements.serverPortInput) this.elements.serverPortInput.value = port;
-    if (this.elements.serverCustomFields) this.elements.serverCustomFields.hidden = false;
-    if (this.elements.serverSelect) this.elements.serverSelect.value = "custom";
+  _applyCustomServerConfig(host, port, apiVersion = "") {
+    // If host already includes a protocol, use it verbatim (port field is ignored).
+    // Otherwise build http://host:port for localhost/LAN usage.
+    let base;
+    if (/^https?:\/\//i.test(host)) {
+      base = host.replace(/\/+$/, "");
+    } else {
+      base = `http://${host}:${port}`;
+    }
+    const overrideVersion = apiVersion?.trim();
+    this._apiVersionLocked = !!overrideVersion;
+    this.config = setViewerConfig({
+      bymBaseUrl: base,
+      cdnBaseUrl: base,
+      ...(overrideVersion ? { apiVersion: overrideVersion } : {}),
+    });
+    if (this.elements.serverHostInput)       this.elements.serverHostInput.value = host;
+    if (this.elements.serverPortInput)       this.elements.serverPortInput.value = port;
+    if (this.elements.serverApiVersionInput) this.elements.serverApiVersionInput.value = apiVersion || "";
+    if (this.elements.serverCustomFields)    this.elements.serverCustomFields.hidden = false;
+    if (this.elements.serverSelect)          this.elements.serverSelect.value = "custom";
   }
 
   _setupMapRenderer() {
@@ -369,10 +388,12 @@ export class ViewerApp {
     this._showOverlay("Signing in...");
 
     try {
-      // Auto-detect API version first
-      const apiVersion = await this.api.resolveApiVersion();
-      this.config = setViewerConfig({ ...this.config, apiVersion });
-      this.api = new ApiClient(this.config);
+      // Auto-detect API version unless the user has manually pinned one
+      if (!this._apiVersionLocked) {
+        const apiVersion = await this.api.resolveApiVersion();
+        this.config = setViewerConfig({ ...this.config, apiVersion });
+        this.api = new ApiClient(this.config);
+      }
 
       const session = await this.api.login(email, password);
       await this._applySession(session);
@@ -386,9 +407,11 @@ export class ViewerApp {
   async _restoreSession(token) {
     this._showOverlay("Restoring session...");
     try {
-      const apiVersion = await this.api.resolveApiVersion();
-      this.config = setViewerConfig({ ...this.config, apiVersion });
-      this.api = new ApiClient(this.config);
+      if (!this._apiVersionLocked) {
+        const apiVersion = await this.api.resolveApiVersion();
+        this.config = setViewerConfig({ ...this.config, apiVersion });
+        this.api = new ApiClient(this.config);
+      }
 
       const session = await this.api.refresh(token);
       await this._applySession(session);

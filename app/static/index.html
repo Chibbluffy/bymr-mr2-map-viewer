@@ -34,12 +34,16 @@
               </select>
               <div id="server-custom-fields" class="server-custom-fields" hidden>
                 <label class="server-custom-field server-custom-url" for="server-host-input">
-                  <span>IP / URL</span>
-                  <input id="server-host-input" type="text" placeholder="127.0.0.1">
+                  <span>Host or full URL</span>
+                  <input id="server-host-input" type="text" placeholder="https://host:port or 127.0.0.1">
                 </label>
                 <label class="server-custom-field server-custom-port" for="server-port-input">
-                  <span>Port</span>
+                  <span>Port (if host only)</span>
                   <input id="server-port-input" type="number" min="1" max="65535" inputmode="numeric" value="3001">
+                </label>
+                <label class="server-custom-field server-custom-apiversion" for="server-apiversion-input">
+                  <span>API Version</span>
+                  <input id="server-apiversion-input" type="text" placeholder="auto-detected">
                 </label>
               </div>
             </div>
