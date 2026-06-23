@@ -1,5 +1,5 @@
-import { ViewerApp } from "../js/viewer-app.js";
-import { MR2 } from "../js/shared.js";
+import { ViewerApp } from "../../js/viewer-app.js";
+import { MR2 } from "../../js/shared.js";
 
 const OUTPOST_FLINGER_RANGE = [0, 1, 2, 3, 4];
 
