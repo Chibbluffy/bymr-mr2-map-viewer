@@ -874,3 +874,34 @@ button { cursor: pointer; }
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
 }
+
+/* ── Export confirm modal ────────────────────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 4, 0.78);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+  backdrop-filter: blur(3px);
+}
+
+.modal-overlay[hidden] { display: none; }
+
+.modal-panel { width: min(380px, 90vw); }
+
+.modal-message { margin: 8px 0 14px; }
+
+.modal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Export button sits alone in its own .map-control-group — the shared group
+   rules assume two buttons and split the rounding/border between them. */
+#export-button {
+  border-radius: 10px;
+  border-left: 1px solid var(--panel-border);
+}

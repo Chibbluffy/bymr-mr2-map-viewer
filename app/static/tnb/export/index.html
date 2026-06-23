@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    >
+    <meta name="robots" content="noindex, nofollow">
+    <title>BYM MR2 Viewer — Export</title>
+    <link rel="icon" type="image/png" href="/assets/buildings/maproom/top.1.png">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div id="app">
+      <main class="map-shell">
+        <section id="map-panel" class="map-panel panel">
+          <canvas id="map-canvas"></canvas>
+
+          <aside class="sidebar">
+            <div class="panel brand-panel">
+              <p class="eyebrow">Backyard Monsters Refitted — Export</p>
+              <h1>Map Room 2 Viewer</h1>
+              <p class="muted">
+                Hex world map — 800×800 cells, water/sand/land/rock terrain.
+              </p>
+            </div>
+
+            <div class="panel server-panel">
+              <p class="eyebrow">Server</p>
+              <select id="server-select" class="server-select">
+                <option value="stable" selected>Stable</option>
+                <option value="local">Local</option>
+                <option value="custom">Custom</option>
+              </select>
+              <div id="server-custom-fields" class="server-custom-fields" hidden>
+                <label class="server-custom-field server-custom-url" for="server-host-input">
+                  <span>Host or full URL</span>
+                  <input id="server-host-input" type="text" placeholder="https://host:port or 127.0.0.1">
+                </label>
+                <label class="server-custom-field server-custom-port" for="server-port-input">
+                  <span>Port (if host only)</span>
+                  <input id="server-port-input" type="number" min="1" max="65535" inputmode="numeric" value="3001">
+                </label>
+                <label class="server-custom-field server-custom-apiversion" for="server-apiversion-input">
+                  <span>API Version</span>
+                  <input id="server-apiversion-input" type="text" placeholder="auto-detected">
+                </label>
+              </div>
+            </div>
+
+            <div class="panel session-panel">
+              <div class="session-header">
+                <div>
+                  <p class="eyebrow">Session</p>
+                  <h2 id="session-name">Signed out</h2>
+                </div>
+                <button id="logout-button" class="secondary-button" type="button" hidden>Log out</button>
+              </div>
+              <p id="session-world" class="muted session-world" hidden></p>
+              <form id="login-form" class="login-form">
+                <label>
+                  <span>Email</span>
+                  <input id="email-input" name="email" type="email" autocomplete="username" required>
+                </label>
+                <label>
+                  <span>Password</span>
+                  <input id="password-input" name="password" type="password" autocomplete="current-password" required>
+                </label>
+                <button id="login-button" class="primary-button" type="submit">Sign in</button>
+              </form>
+              <p id="session-status" class="muted">Sign in with your BYM credentials.</p>
+            </div>
+
+            <div class="panel details-panel">
+              <p class="eyebrow">Cell</p>
+              <h2 id="details-title">No selection</h2>
+              <div id="details-content" class="details-content">
+                Hover or click a cell to inspect it.
+              </div>
+            </div>
+
+            <div class="panel legend-panel">
+              <p class="eyebrow">Legend</p>
+              <h2>Map Key</h2>
+
+              <p class="legend-section-label">Terrain</p>
+              <div class="legend">
+                <div class="legend-item"><span class="legend-swatch swatch-water"></span>Water (impassable)</div>
+              </div>
+
+              <p class="legend-section-label">Occupants</p>
+              <div class="legend">
+                <div class="legend-item"><span class="legend-swatch swatch-mine-home"></span>Your home base</div>
+                <div class="legend-item"><span class="legend-swatch swatch-mine-out"></span>Your outpost</div>
+                <div class="legend-item"><span class="legend-swatch swatch-other-home"></span>Other player's home base</div>
+                <div class="legend-item"><span class="legend-swatch swatch-other-out"></span>Other player's outpost</div>
+                <div class="legend-item"><span class="legend-swatch swatch-wm"></span>Wild monster tribe</div>
+              </div>
+
+              <p class="legend-section-label">Filter</p>
+              <div class="legend">
+                <div class="legend-item"><span class="legend-swatch swatch-filter"></span>Highlighted match</div>
+                <div class="legend-item"><span class="legend-swatch swatch-dim"></span>Dimmed (no match)</div>
+              </div>
+            </div>
+
+            <div class="panel credits-panel">
+              <p class="muted credits-copy">
+                Made with &lt;3 for BYM Refitted.
+                <br>
+                Full map load: ~6 400 chunks at 30 concurrent.
+              </p>
+            </div>
+          </aside>
+
+          <button
+            id="sidebar-toggle-button"
+            class="sidebar-toggle-button"
+            type="button"
+            aria-label="Hide sidebar"
+            aria-expanded="true"
+            title="Hide sidebar"
+            hidden
+          >
+            <svg class="sidebar-toggle-icon sidebar-toggle-icon-desktop" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M15.5 4.5 8 12l7.5 7.5-2.1 2.1L3.8 12l9.6-9.6 2.1 2.1Z" />
+            </svg>
+            <svg class="sidebar-toggle-icon sidebar-toggle-icon-close" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5Z" />
+            </svg>
+          </button>
+
+          <!-- Search + Filter toolbar -->
+          <div class="map-tool-bar">
+
+            <!-- Button row -->
+            <div class="map-tool-buttons">
+              <button
+                id="search-toggle-button"
+                class="icon-button"
+                type="button"
+                aria-label="Open search"
+                aria-expanded="false"
+                title="Search players"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Zm6.86 10.44L21 20.08 19.58 21.5l-3.64-3.64 1.42-1.42Z" />
+                </svg>
+              </button>
+              <button
+                id="filter-toggle-button"
+                class="icon-button"
+                type="button"
+                aria-label="Open filters"
+                aria-expanded="false"
+                title="Filter cells"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 6h16l-6 7v5l-4 2v-7L4 6Z" />
+                </svg>
+              </button>
+            </div>
+
+            <!-- Panels row — search and filter sit side by side in normal flow -->
+            <div class="map-panels-row">
+
+              <div id="search-panel" class="map-tool-panel" hidden>
+                <p class="eyebrow">Search</p>
+                <div class="search-shell">
+                  <input
+                    id="search-input"
+                    class="search-input"
+                    type="search"
+                    placeholder="Search by username"
+                    autocomplete="off"
+                    spellcheck="false"
+                    disabled
+                  >
+                  <div id="search-results" class="search-results" hidden></div>
+                </div>
+              </div>
+
+              <div id="filter-panel" class="map-tool-panel" hidden>
+                <div class="filter-header">
+                  <div>
+                    <p class="eyebrow">Filter</p>
+                    <h2>Highlight Cells</h2>
+                  </div>
+                  <button id="filter-clear-button" class="secondary-button" type="button">Clear</button>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Player</p>
+                  <div class="search-shell">
+                    <div id="filter-player-tags-area" class="filter-player-tags-area">
+                      <!-- player chips injected here by JS -->
+                      <input
+                        id="filter-player-input"
+                        class="filter-player-input"
+                        type="text"
+                        placeholder="Type to add players…"
+                        autocomplete="off"
+                        spellcheck="false"
+                      >
+                    </div>
+                    <div id="filter-player-results" class="search-results" hidden></div>
+                  </div>
+                  <p class="filter-help">Highlights all cells owned by selected players.</p>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Base Type</p>
+                  <div id="filter-base-options" class="filter-options">
+                    <label class="filter-option"><input type="checkbox" value="main"> Main Yard</label>
+                    <label class="filter-option"><input type="checkbox" value="outpost"> Outpost</label>
+                    <label class="filter-option"><input type="checkbox" value="wildmonster"> Wild Monster</label>
+                  </div>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Terrain</p>
+                  <div id="filter-terrain-options" class="filter-options">
+                    <label class="filter-option"><input type="checkbox" value="water"> Water</label>
+                    <label class="filter-option"><input type="checkbox" value="sand"> Sand</label>
+                    <label class="filter-option"><input type="checkbox" value="grass"> Grass / Land</label>
+                    <label class="filter-option"><input type="checkbox" value="rock"> Rock / Mountain</label>
+                  </div>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Tower Bonus — outposts only</p>
+                  <p class="filter-help">Higher ground → positive bonus. Avg altitude = 0%.</p>
+                  <div class="filter-range-values">
+                    <span id="tower-bonus-min-label" class="filter-range-value">−20%</span>
+                    <span id="tower-bonus-max-label" class="filter-range-value">+60%</span>
+                  </div>
+                  <div class="filter-range-track">
+                    <div id="tower-bonus-fill" class="filter-range-fill"></div>
+                    <input id="tower-bonus-min" class="filter-range-slider" type="range" min="-20" max="60" step="1" value="-20">
+                    <input id="tower-bonus-max" class="filter-range-slider" type="range" min="-20" max="60" step="1" value="60">
+                  </div>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Resource Bonus — outposts only</p>
+                  <p class="filter-help">Lower ground → positive bonus. Inverse of tower bonus.</p>
+                  <div class="filter-range-values">
+                    <span id="resource-bonus-min-label" class="filter-range-value">−40%</span>
+                    <span id="resource-bonus-max-label" class="filter-range-value">+25%</span>
+                  </div>
+                  <div class="filter-range-track">
+                    <div id="resource-bonus-fill" class="filter-range-fill"></div>
+                    <input id="resource-bonus-min" class="filter-range-slider" type="range" min="-40" max="25" step="1" value="-40">
+                    <input id="resource-bonus-max" class="filter-range-slider" type="range" min="-40" max="25" step="1" value="25">
+                  </div>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Flinger Range — outposts only</p>
+                  <p class="filter-help">Filter outposts by their flinger's cell reach (0 = no flinger).</p>
+                  <div id="filter-flinger-options" class="filter-options filter-options--inline">
+                    <label class="filter-option"><input type="checkbox" value="0"> Range 0</label>
+                    <label class="filter-option"><input type="checkbox" value="1"> Range 1</label>
+                    <label class="filter-option"><input type="checkbox" value="2"> Range 2</label>
+                    <label class="filter-option"><input type="checkbox" value="3"> Range 3</label>
+                    <label class="filter-option"><input type="checkbox" value="4"> Range 4</label>
+                  </div>
+                </div>
+
+                <div class="filter-footer">
+                  <p id="filter-match-count" class="filter-match-count muted">No filter active</p>
+                </div>
+              </div>
+
+            </div><!-- end map-panels-row -->
+
+          </div><!-- end map-tool-bar -->
+
+          <!-- Load progress bar -->
+          <div id="load-progress" class="load-progress" hidden>
+            <div id="load-progress-bar" class="load-progress-bar"></div>
+            <span id="load-progress-text" class="load-progress-text">Loading...</span>
+          </div>
+
+          <div id="map-coordinates" class="map-coordinates" hidden>Cell -, -</div>
+
+          <div id="map-overlay" class="map-overlay" data-message="Loading..."></div>
+
+          <div class="map-controls" aria-label="Map controls">
+            <!-- Reload + background-load group -->
+            <div class="map-control-group">
+              <button
+                id="refresh-button"
+                class="icon-button map-control-button"
+                type="button"
+                aria-label="Refresh map area"
+                title="Reload area around home base (clears cache)"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5a7 7 0 1 1-6.65 9.18 1 1 0 1 1 1.9-.62A5 5 0 1 0 8 8.58V11a1 1 0 0 1-1.7.71l-3-3a1 1 0 0 1 0-1.42l3-3A1 1 0 0 1 8 5v1.46A6.96 6.96 0 0 1 12 5Z" />
+                </svg>
+              </button>
+              <button
+                id="bg-load-button"
+                class="bg-load-button"
+                type="button"
+                aria-label="Load full map in background"
+                aria-pressed="false"
+                title="Load the entire 800×800 map in the background"
+                disabled
+              >
+                <svg class="bg-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 14.5v-9l6 4.5-6 4.5Z" />
+                </svg>
+                <span class="bg-load-label">Load full map</span>
+              </button>
+            </div>
+
+            <!-- Export group -->
+            <div class="map-control-group">
+              <button
+                id="export-button"
+                class="bg-load-button"
+                type="button"
+                aria-label="Export map data to CSV"
+                title="Export player data to CSV"
+                disabled
+              >
+                <svg class="bg-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 20h14v-2H5v2Zm7-18-5 5h3v6h4V7h3l-5-5Z" />
+                </svg>
+                <span id="export-button-label" class="bg-load-label">Export CSV</span>
+              </button>
+            </div>
+
+            <!-- Navigation group -->
+            <button
+              id="find-home-button"
+              class="icon-button map-control-button"
+              type="button"
+              aria-label="Find home base"
+              title="Jump to home base (H)"
+              disabled
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3 3 10.5V21h6v-5h6v5h6V10.5L12 3Z" />
+              </svg>
+            </button>
+            <button
+              id="zoom-out-button"
+              class="icon-button map-control-button"
+              type="button"
+              aria-label="Zoom out"
+              title="Zoom out (-)"
+            >−</button>
+            <button
+              id="zoom-in-button"
+              class="icon-button map-control-button"
+              type="button"
+              aria-label="Zoom in"
+              title="Zoom in (+)"
+            >+</button>
+          </div>
+
+          <!-- Export refresh-reminder modal -->
+          <div id="export-confirm-modal" class="modal-overlay" hidden>
+            <div class="panel modal-panel">
+              <p class="eyebrow">Export</p>
+              <h2>Refresh before exporting?</h2>
+              <p class="muted modal-message">
+                The full map is already loaded, but it may be stale. Refresh now so the CSV
+                reflects current data, or export with what's already loaded.
+              </p>
+              <div class="modal-actions">
+                <button id="export-refresh-button" class="primary-button" type="button">Refresh &amp; Export</button>
+                <button id="export-now-button" class="secondary-button" type="button">Export Current Data</button>
+                <button id="export-cancel-button" class="secondary-button" type="button">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="export.js"></script>
+  </body>
+</html>
