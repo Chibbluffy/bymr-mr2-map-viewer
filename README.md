@@ -37,7 +37,7 @@ Map Room 2 is distinct from Map Room 1 (the original non-hex indoor map room) an
 
 The viewer runs entirely in your browser. After signing in, it connects directly to the selected BYM server for authentication and map data — no credentials or map data pass through any separate backend.
 
-Map data is fetched using the `/worldmapv2/getarea` endpoint, which returns cells in 10×10 chunk blocks. The viewer queues all 6 400 chunks (the full 800×800 grid) and fetches them with up to 30 concurrent requests, loading from the centre of the map outward so your home area becomes visible quickly. On a local server this typically completes in well under a minute.
+Map data is fetched using the `/worldmapv2/getarea` endpoint, which returns cells in 10×10 chunk blocks. The viewer queues all 6,400 chunks (the full 800×800 grid) and fetches them in the background at 4 concurrent requests (the visible viewport loads separately at 8 concurrent), loading from the centre of the map outward so your home area becomes visible quickly. A full background reload of all 6,400 chunks typically takes around 10 minutes.
 
 ## Credentials and Privacy
 
