@@ -496,10 +496,13 @@ export class ViewerApp {
   // byte-per-cell height map) and /worldmapv2/snapshot (every occupied cell) —
   // instead of crawling the map in 10x10 chunks. Unattacked wild monster camps
   // (most of the map) are reconstructed client-side from pure functions of
-  // (x, y, worldid); see MapRenderer.loadWorld(). Both endpoints are ETag'd
-  // and ~immutable/slow-changing, so every load revalidates rather than
-  // blindly refetching, and IndexedDB gives an instant paint from the last
-  // session while that revalidation is in flight.
+  // (x, y, worldid); see MapRenderer.loadWorld(). Both endpoints support
+  // ETag/If-None-Match revalidation server-side, but If-None-Match isn't on
+  // the server's CORS Access-Control-Allow-Headers list, so sending it gets
+  // the whole request blocked client-side with a generic network error — see
+  // ApiClient.getTerrain()'s comment. Every load fetches the full body;
+  // IndexedDB still gives an instant paint from the last session while that
+  // fetch is in flight, it just can't be cheaply revalidated first.
 
   // Bumps whenever a session boundary is crossed (login or logout) so a load
   // still in flight from before that point can tell it's been superseded.
@@ -637,8 +640,8 @@ export class ViewerApp {
     let terrainResult, snapshotResult;
     try {
       [terrainResult, snapshotResult] = await Promise.all([
-        this.api.getTerrain(token, worldid, force ? null : this._terrainEtag).then(r => { bump(); return r; }),
-        this.api.getSnapshot(token, worldid, force ? null : this._snapshotEtag).then(r => { bump(); return r; }),
+        this.api.getTerrain(token, worldid).then(r => { bump(); return r; }),
+        this.api.getSnapshot(token, worldid).then(r => { bump(); return r; }),
       ]);
     } catch (err) {
       // worldid is resolved once at login and held in memory for the rest of
@@ -688,7 +691,8 @@ export class ViewerApp {
     }
 
     if (!terrainBytes || !snapshot) {
-      // No cache and nothing new — a 304 with no prior data, i.e. a real failure.
+      // Shouldn't happen — a successful fetch always returns a body — but
+      // guard against it rather than proceed with a half-built world.
       this._showStatus("Failed to load the world map.");
       this._hideOverlay();
       return;

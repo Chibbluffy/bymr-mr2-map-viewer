@@ -111,28 +111,33 @@ export class ApiClient {
   }
 
   // Bulk terrain height map — 640 000 bytes, one per cell, index x*800+y.
-  // Deterministic and immutable for the life of a world, so pass back the
-  // last ETag to revalidate instead of re-fetching the body.
-  // Returns { notModified: true } on a 304, else { bytes, etag }.
-  async getTerrain(token, worldid, etag = null) {
-    return this._getBulk("/worldmapv2/terrain", token, worldid, etag, "arrayBuffer");
+  // Deterministic and immutable for the life of a world.
+  //
+  // The server's ETag/If-None-Match support (conditional GETs, 304s) isn't
+  // usable from here: If-None-Match isn't on the server's CORS
+  // Access-Control-Allow-Headers list, so the browser blocks the preflight
+  // outright once a cached ETag exists to send — surfacing as a generic
+  // "NetworkError when attempting to fetch resource" with no indication it's
+  // a CORS issue. Always fetching the full body avoids that; the IndexedDB
+  // cache in ViewerApp still gives an instant paint from the last session,
+  // it just can't be cheaply revalidated against the server.
+  // Returns { bytes, etag }.
+  async getTerrain(token, worldid) {
+    return this._getBulk("/worldmapv2/terrain", token, worldid, "arrayBuffer");
   }
 
   // Bulk occupancy snapshot — every main yard, outpost, and attacked wild
   // camp, plus their owners. Rebuilt server-side at most once every 5
-  // minutes, so revalidate on the same cadence rather than polling harder.
-  // Returns { notModified: true } on a 304, else { snapshot, etag }.
-  async getSnapshot(token, worldid, etag = null) {
-    return this._getBulk("/worldmapv2/snapshot", token, worldid, etag, "json");
+  // minutes. See getTerrain()'s comment for why this always fetches in full
+  // rather than attempting a conditional GET.
+  // Returns { snapshot, etag }.
+  async getSnapshot(token, worldid) {
+    return this._getBulk("/worldmapv2/snapshot", token, worldid, "json");
   }
 
-  async _getBulk(path, token, worldid, etag, as) {
+  async _getBulk(path, token, worldid, as) {
     const headers = { Authorization: `Bearer ${token}` };
-    if (etag) headers["If-None-Match"] = etag;
-
     const response = await fetch(buildBymUrl(path, { worldid }, this.config), { method: "GET", headers });
-
-    if (response.status === 304) return { notModified: true };
 
     if (as === "arrayBuffer") {
       if (!response.ok) {
