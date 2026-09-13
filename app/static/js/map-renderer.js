@@ -1,4 +1,4 @@
-import { MR2, HEX_VERTICES, cellKey, getTileDef, isWater } from "./shared.js";
+import { MR2, HEX_VERTICES, cellKey, getTileDef, isWater, tribeAt, levelAt, generateBaseId } from "./shared.js";
 
 // ─── Geometry constants ───────────────────────────────────────────────────────
 // Flat-top hex grid: offset columns (odd columns shift down by half hex height).
@@ -100,6 +100,7 @@ export class MapRenderer {
     this.ctx    = canvas.getContext("2d");
 
     this.cells   = new Map();
+    this.myUserId = null;  // set by ViewerApp after login — needed to derive `mine`, a per-viewer field the bulk snapshot doesn't carry
     this.zoom    = 0.25;
     this.viewX   = (MR2.mapWidth  * CS) / 2 - canvas.clientWidth  / (2 * this.zoom);
     this.viewY   = (MR2.mapHeight * RS + CO) / 2 - canvas.clientHeight / (2 * this.zoom);
@@ -130,6 +131,9 @@ export class MapRenderer {
 
   // ─── Public API ─────────────────────────────────────────────────────────────
 
+  // Ingest a single /worldmapv2/getarea response — used for click-to-enrich
+  // detail (resources, monsters, truce, live lock state) on top of the bulk
+  // world data, since getarea's response is a strict superset for that cell.
   ingestArea(areaData) {
     for (const [xStr, row] of Object.entries(areaData)) {
       const cx = parseInt(xStr, 10);
@@ -142,13 +146,93 @@ export class MapRenderer {
     this.markDirty();
   }
 
-  // Ingest a flat array of { x, y, ...fields } returned by /worldmapv2/getcellsforviewer.
-  ingestCells(celldata) {
-    for (const cell of celldata) {
-      if (cell.x < 0 || cell.x >= MR2.mapWidth || cell.y < 0 || cell.y >= MR2.mapHeight) continue;
-      this.cells.set(cellKey(cell.x, cell.y), cell);
+  // Builds the entire map from a /worldmapv2/terrain byte blob plus a
+  // /worldmapv2/snapshot payload. Replaces the whole cell set — safe to call
+  // again on every snapshot poll since it starts fresh from the (unchanging)
+  // terrain and layers the new snapshot on top, so a cell that's no longer
+  // occupied (e.g. a regenerated tribe camp) can't linger with stale data.
+  loadWorld(terrainBytes, snapshot) {
+    const W = MR2.mapWidth, H = MR2.mapHeight;
+    const cells = new Map();
+
+    for (let x = 0; x < W; x++) {
+      for (let y = 0; y < H; y++) {
+        const i = terrainBytes[x * H + y];
+        if (i <= MR2.terrain.WATER3) {
+          cells.set(cellKey(x, y), { x, y, i });
+          continue;
+        }
+        // Default: an unattacked wild monster camp. These are never persisted
+        // server-side either — /worldmapv2/getarea computes the same thing.
+        cells.set(cellKey(x, y), {
+          x, y, i,
+          uid: 0,
+          b: MR2.cellTypes.WM,
+          bid: generateBaseId(snapshot.worldid, x, y),
+          n: tribeAt(x, y),
+          l: levelAt(x, y),
+          dm: 0,
+          d: 0,
+        });
+      }
     }
+
+    this.cells = cells;
+    this._applySnapshot(snapshot);
     this.markDirty();
+  }
+
+  _applySnapshot(snapshot) {
+    const { players, cells: rows } = snapshot;
+    const now = Math.floor(Date.now() / 1000);
+
+    for (const row of rows) {
+      const [x, y, baseType, uid, bid, empirevalue, flinger, catapult, damage, protectedUntil, destroyed] = row;
+      if (x < 0 || x >= MR2.mapWidth || y < 0 || y >= MR2.mapHeight) continue;
+
+      const key = cellKey(x, y);
+      const existing = this.cells.get(key) || { x, y };
+
+      // getarea zeroes damage once a base's protection window has already
+      // expired (see userCell.ts) — replicate that so display matches.
+      const protectionExpired = protectedUntil > 0 && protectedUntil <= now;
+      const isProtected = protectedUntil > 0 && !protectionExpired;
+
+      const cell = {
+        ...existing,
+        x, y,
+        b: baseType,
+        uid,
+        bid,
+        v: empirevalue,
+        f: flinger,
+        c: catapult,
+        p: isProtected ? 1 : 0,
+        protected: protectedUntil,
+      };
+
+      if (baseType === MR2.cellTypes.WM) {
+        // Attacked wild camp — n/l keep the tribe/level formula loadWorld()
+        // already set; only damage/destroyed come from the DB row.
+        cell.dm = damage;
+        cell.d  = destroyed;
+      } else {
+        // Player base (home or outpost). mine is relative to the signed-in
+        // viewer — never sent by the snapshot — and d mirrors getarea's own
+        // "damage >= 90%" visual flag rather than the raw destroyed column,
+        // which getarea never surfaces for these base types.
+        const owner = players[uid];
+        cell.n = owner?.name ?? existing.n;
+        cell.pic_square = owner?.avatar ?? undefined;
+        cell.im = owner?.avatar ?? undefined;
+        cell.mine = uid === this.myUserId ? 1 : 0;
+        const displayDamage = protectionExpired ? 0 : damage;
+        cell.dm = displayDamage;
+        cell.d  = displayDamage >= 90 ? 1 : 0;
+      }
+
+      this.cells.set(key, cell);
+    }
   }
 
   clearCells() {
@@ -206,38 +290,6 @@ export class MapRenderer {
       if (cell.mine === 1 && cell.b === MR2.cellTypes.HOMECELL) return cell;
     }
     return null;
-  }
-
-  // Returns a Set of "x,y" chunk-origin strings (multiples of 10) that are
-  // currently visible on screen, plus an optional buffer ring of extra chunks.
-  getVisibleChunkKeys(buffer = 2) {
-    const W    = this.canvas.clientWidth;
-    const H    = this.canvas.clientHeight;
-    const step = 10;
-
-    const startCX = Math.max(0, Math.floor(this.viewX / CS) - 2);
-    const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / this.zoom) / CS) + 2);
-    const startCY = Math.max(0, Math.floor(this.viewY / RS) - 1);
-    const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / this.zoom) / RS) + 2);
-
-    // Use floor for min (round inward) and floor for max too, but add buffer
-    // chunks on top.  Clamp max to the last valid chunk origin (map size - step).
-    const chunkMinX = Math.max(0,                    Math.floor(startCX / step) * step - buffer * step);
-    const chunkMaxX = Math.min(MR2.mapWidth  - step, Math.floor(endCX   / step) * step + buffer * step);
-    const chunkMinY = Math.max(0,                    Math.floor(startCY / step) * step - buffer * step);
-    const chunkMaxY = Math.min(MR2.mapHeight - step, Math.floor(endCY   / step) * step + buffer * step);
-
-    // Grow by one extra step to catch partial chunks at the visible edge
-    const safeMaxX = Math.min(MR2.mapWidth  - step, chunkMaxX + step);
-    const safeMaxY = Math.min(MR2.mapHeight - step, chunkMaxY + step);
-
-    const keys = new Set();
-    for (let y = chunkMinY; y <= safeMaxY; y += step) {
-      for (let x = chunkMinX; x <= safeMaxX; x += step) {
-        keys.add(`${x},${y}`);
-      }
-    }
-    return keys;
   }
 
   getCellAt(cx, cy) { return this.cells.get(cellKey(cx, cy)) ?? null; }

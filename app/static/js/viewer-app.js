@@ -2,25 +2,34 @@ import { ApiClient } from "./api-client.js";
 import { MapRenderer } from "./map-renderer.js";
 import {
   MR2,
+  MapRoomVersion,
   STABLE_VIEWER_CONFIG,
   SERVER_SELECTION_STORAGE_KEY,
   SEARCH_RESULT_LIMIT,
   buildTokenStorageKey,
-  buildFullMapCacheKey,
-  buildLoadedChunksCacheKey,
+  buildTerrainCacheKey,
+  buildSnapshotCacheKey,
   buildHomePosKey,
+  cellKey,
   escapeHtml,
-  generateChunkCoords,
   getLocalViewerConfig,
   getTerrainLabel,
   isWater,
-  sessionCacheDelete,
   sessionCacheGet,
   sessionCacheSet,
   setViewerConfig,
 } from "./shared.js";
 
 const SIGNED_OUT_OVERLAY_MESSAGE = "Please log in.";
+
+// This viewer's sibling for the other map room version — linked when an
+// account's world doesn't match the one this viewer is built for.
+const OTHER_VIEWER_URL = "https://bymr-maproom3-viewer.chibbluffy.fyi/";
+const WRONG_MAP_VERSION_OVERLAY_MESSAGE = "This account is not on a Map Room 2 world.";
+const WRONG_MAP_VERSION_MESSAGE =
+  `${WRONG_MAP_VERSION_OVERLAY_MESSAGE} Please make sure it is on an ` +
+  `upgraded map room, or try the other map viewer: ` +
+  `<a href="${OTHER_VIEWER_URL}" target="_blank" rel="noopener">${OTHER_VIEWER_URL}</a>`;
 
 // Compact number formatter: 1234567 → "1.2M", 5000 → "5K", 400 → "400"
 // Negative values are clamped to 0 — they appear in the game DB as delta artefacts.
@@ -29,30 +38,6 @@ function _fmtNum(n) {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000)     return `${(v / 1_000).toFixed(0)}K`;
   return String(v);
-}
-
-// ─── Simple concurrency semaphore ─────────────────────────────────────────────
-
-class Semaphore {
-  constructor(max) {
-    this.max = max;
-    this.running = 0;
-    this.queue = [];
-  }
-
-  async acquire() {
-    if (this.running < this.max) {
-      this.running++;
-      return;
-    }
-    await new Promise((resolve) => this.queue.push(resolve));
-    this.running++;
-  }
-
-  release() {
-    this.running = Math.max(0, this.running - 1);
-    if (this.queue.length) this.queue.shift()();
-  }
 }
 
 // ─── ViewerApp ────────────────────────────────────────────────────────────────
@@ -72,20 +57,24 @@ export class ViewerApp {
     this._filterPlayers = new Map();  // uid → name; drives multi-player highlight
     this._apiVersionLocked = false;   // true when user has manually pinned API version
 
-    // ── Demand-load state ────────────────────────────────────────────────────
-    // Set of "x,y" chunk-origin strings already fetched this session
-    this._loadedChunks   = new Set();
-    // Chunks currently in-flight — prevents duplicate requests while panning
-    this._pendingChunks  = new Set();
-    // AbortController for the viewport / full-load operations
-    this._loadAbortController = null;
-    // AbortController for background full-map load
-    this._bgAbortController  = null;
+    // ── World-load state ─────────────────────────────────────────────────────
+    this._worldLoaded      = false;  // true once terrain+snapshot have loaded at least once
+    this._terrainBytes     = null;   // cached raw terrain blob, reused on every snapshot poll
+    this._terrainEtag      = null;
+    this._snapshotEtag     = null;
+    this._worldLoadPromise = null;   // in-flight load — lets concurrent callers share one fetch
+    // Bumped on every login and logout. A load in flight when the generation
+    // moves on (a different account logs in, or the session ends) discards
+    // its result instead of writing a now-stale session's data into the
+    // renderer — see _bumpWorldLoadGeneration() and _doLoadWorld().
+    this._worldLoadGeneration = 0;
+    // Bumped on every cell click so a slow, superseded getarea reply can't
+    // clobber a later selection's detail panel.
+    this._enrichToken = 0;
+    // Kept for the tnb/export page, which polls these directly rather than
+    // hooking a viewer-app event — see the compatibility shims near the
+    // bottom of the map-loading section.
     this._bgLoadActive = false;
-    // Debounce timer for persisting the loaded-chunks Set to IndexedDB
-    this._saveChunksTimer = null;
-    // Debounce timer for persisting cell data to IndexedDB
-    this._saveCellsTimer  = null;
 
     this.elements = {
       appRoot:            document.getElementById("app"),
@@ -106,6 +95,7 @@ export class ViewerApp {
       mapCanvas:          document.getElementById("map-canvas"),
       mapCoordinates:     document.getElementById("map-coordinates"),
       mapOverlay:         document.getElementById("map-overlay"),
+      mapOverlayMessage:  document.getElementById("map-overlay-message"),
       loadProgress:       document.getElementById("load-progress"),
       loadProgressBar:    document.getElementById("load-progress-bar"),
       loadProgressText:   document.getElementById("load-progress-text"),
@@ -278,6 +268,7 @@ export class ViewerApp {
     this.renderer.onCellClick = (cell) => {
       this.selectedCell = cell;
       this._renderDetails(cell);
+      this._enrichSelectedCell(cell);
     };
 
     this.renderer.onCoordsChange = (x, y) => {
@@ -287,11 +278,6 @@ export class ViewerApp {
       } else {
         this.elements.mapCoordinates.hidden = true;
       }
-    };
-
-    // Demand-load new chunks as the user pans or zooms
-    this.renderer.onViewportChanged = () => {
-      if (this.session) this._loadViewport();
     };
 
     // Resize observer
@@ -326,12 +312,13 @@ export class ViewerApp {
       if (home) this._jumpTo(home.x, home.y);
     });
 
+    // Sole reload control — combines what used to be two separate buttons
+    // (refresh-button and bg-load-button). bg-load-button no longer exists
+    // in the DOM; _startBackgroundLoad()/_bgLoadActive/etc. are kept only
+    // for the tnb/export page, which calls them directly as methods rather
+    // than through a click on that button.
     refreshButton?.addEventListener("click", () => {
       if (this.session) this._refreshMap();
-    });
-
-    this.elements.bgLoadButton?.addEventListener("click", () => {
-      if (this.session) this._toggleBackgroundLoad();
     });
 
     zoomInButton?.addEventListener("click", () => this.renderer?.zoomIn());
@@ -436,13 +423,12 @@ export class ViewerApp {
     const tokenKey = buildTokenStorageKey(this.config);
     localStorage.removeItem(tokenKey);
 
-    if (this._loadAbortController) { this._loadAbortController.abort(); this._loadAbortController = null; }
-    if (this._bgAbortController)   { this._bgAbortController.abort();   this._bgAbortController   = null; }
-    this._bgLoadActive  = false;
-    this._loadedChunks  = new Set();
-    this._pendingChunks = new Set();
-    clearTimeout(this._saveChunksTimer);
-    clearTimeout(this._saveCellsTimer);
+    this._bumpWorldLoadGeneration();
+    this._worldLoaded      = false;
+    this._terrainBytes     = null;
+    this._terrainEtag      = null;
+    this._snapshotEtag     = null;
+    this._bgLoadActive     = false;
     this._setBgLoadButtonState(false);
 
     this.session = null;
@@ -505,248 +491,291 @@ export class ViewerApp {
 
 
   // ─── Map loading ─────────────────────────────────────────────────────────────
+  //
+  // The whole world loads in two requests — /worldmapv2/terrain (a static
+  // byte-per-cell height map) and /worldmapv2/snapshot (every occupied cell) —
+  // instead of crawling the map in 10x10 chunks. Unattacked wild monster camps
+  // (most of the map) are reconstructed client-side from pure functions of
+  // (x, y, worldid); see MapRenderer.loadWorld(). Both endpoints are ETag'd
+  // and ~immutable/slow-changing, so every load revalidates rather than
+  // blindly refetching, and IndexedDB gives an instant paint from the last
+  // session while that revalidation is in flight.
 
-  // Called on login / session restore.  Restores from cache if available,
-  // then demand-loads any visible chunks that aren't already cached.
+  // Bumps whenever a session boundary is crossed (login or logout) so a load
+  // still in flight from before that point can tell it's been superseded.
+  // Also drops any in-flight promise reference so the next _loadWorld() call
+  // starts fresh instead of coalescing onto (and awaiting the result of) a
+  // load that belongs to a different account or no account at all.
+  _bumpWorldLoadGeneration() {
+    this._worldLoadGeneration++;
+    this._worldLoadPromise = null;
+  }
+
+  // Called on login / session restore.
   async _initMapLoad() {
     if (!this.session) return;
+    this._bumpWorldLoadGeneration();
 
-    const uid     = this.session.user.userid;
-    const worldid = this.session.map?.worldid || "";
-    const cellsKey  = buildFullMapCacheKey(uid, worldid);
-    const chunksKey = buildLoadedChunksCacheKey(uid, worldid);
+    if (!this.session.map?.worldid) await this._resolveWorldId();
 
-    try {
-      const [cachedCells, cachedChunks] = await Promise.all([
-        sessionCacheGet(cellsKey),
-        sessionCacheGet(chunksKey),
-      ]);
-
-      if (cachedCells?.cells?.length > 0) {
-        this.renderer.clearCells();
-        this.renderer.ingestCells(cachedCells.cells);
-        this._loadedChunks = new Set(cachedChunks?.chunks ?? []);
-        this._hideOverlay();
-        this._updateSearchEntries();
-        this._updateFilterCount();
-        this._autoFindHome();
-        this._showProgress(
-          `Restored from cache — ${this._loadedChunks.size} chunks loaded. Pan to explore; use ↺ to reset.`,
-          this._loadedChunks.size,
-          this._loadedChunks.size,
-        );
-        setTimeout(() => this._hideProgress(), 3000);
-        // Load any viewport gaps not already in the chunk cache
-        await this._loadViewport();
-        return;
-      }
-    } catch { /* no cache or error — fresh load */ }
-
-    // No cache: center on stored home position if known, then load the viewport.
-    // After the first load completes, try to center on the actual home cell now
-    // that it's in the renderer — only done once here, never during panning.
-    this._loadedChunks = new Set();
-    this._centerOnStoredHome();
-    this._showOverlay("Loading area around your base...");
-    await this._loadViewport();
-    this._autoFindHome();
-  }
-
-  // Refresh button (↺): clears cache, returns to home, reloads viewport only.
-  async _refreshMap() {
-    if (!this.session) return;
-
-    if (this._bgAbortController) {
-      this._bgAbortController.abort();
-      this._bgAbortController = null;
-      this._bgLoadActive = false;
-      this._setBgLoadButtonState(false);
-    }
-    if (this._loadAbortController) {
-      this._loadAbortController.abort();
-      this._loadAbortController = null;
+    // terrain/snapshot would just 400 "Unknown worldid" for an MR3 account
+    // (their world exists, it's just not tagged V2) — check up front against
+    // the public world list and point the player at the right viewer instead
+    // of a doomed fetch.
+    // Covers both "wrong map room version" and "no world at all" — see
+    // _isWrongMapVersion()'s doc comment.
+    if (await this._isWrongMapVersion()) {
+      this._showStatus(WRONG_MAP_VERSION_OVERLAY_MESSAGE);
+      this._showOverlay(WRONG_MAP_VERSION_MESSAGE);
+      return;
     }
 
-    const uid     = this.session.user.userid;
-    const worldid = this.session.map?.worldid || "";
-    try {
-      await Promise.all([
-        sessionCacheDelete(buildFullMapCacheKey(uid, worldid)),
-        sessionCacheDelete(buildLoadedChunksCacheKey(uid, worldid)),
-      ]);
-    } catch { /* ignore */ }
-
-    this._loadedChunks  = new Set();
-    this._pendingChunks = new Set();
-    this.renderer.clearCells();
-    this.selectedCell = null;
-
     this._centerOnStoredHome();
-    this._showOverlay("Reloading area around your base...");
-    await this._loadViewport();
+    await this._loadWorld({ useCache: true });
   }
 
-  // Demand-loads chunks currently visible in the viewport that haven't been
-  // fetched yet.  Called on login, pan, zoom, and after refresh.
+  // Cross-references the resolved worldid against the public world list to
+  // confirm it's actually a Map Room 2 world. True for "wrong version", "no
+  // world at all", or anything else that isn't a confirmed MR2 world; false
+  // only once a match is confirmed. If the check itself can't complete (e.g.
+  // a network error), returns false so the normal load path runs and fails
+  // on its own terms rather than blocking on an inconclusive check.
+  async _isWrongMapVersion() {
+    const worldid = this.session.map?.worldid;
+    if (!worldid) return true;
+
+    let worlds;
+    try {
+      ({ worlds } = await this.api.getWorlds());
+    } catch {
+      return false;
+    }
+
+    const world = (worlds || []).find((candidate) => candidate.uuid === worldid);
+    return !(world && world.map_version === MapRoomVersion.V2);
+  }
+
+  // Neither /player/getinfo nor /bm/getnewmap expose the player's worldid —
+  // it's only ever returned by /base/load, so that's what we fall back to.
+  // This also runs the game's own one-time login side effects (Town Hall
+  // reward grants, invasion wave rollover), same as the real client's first
+  // base load: rewards land the moment the player's next real load would
+  // have granted them anyway, and the invasion rollover happens once per
+  // monthly cycle regardless of which client triggers the first load that
+  // cycle — neither changes anything the player would perceive differently.
   //
-  // Key design: in-flight fetches are NEVER aborted mid-request.  Aborting
-  // removes a key from _pendingChunks without adding it to _loadedChunks,
-  // which leaves a permanent gap in the map.  Instead we only cancel the
-  // queue gate (so we stop dispatching new requests from the old call), while
-  // letting any already-started requests finish and commit their data.
-  async _loadViewport() {
-    if (!this.session || !this.renderer) return;
-
-    // Cancel the previous queue gate only — does NOT abort in-flight fetches
-    if (this._loadAbortController) {
-      this._loadAbortController.abort();
+  // Deliberately NOT cached across logins: a player can relocate to a
+  // different (still perfectly valid) MR2 world, and a cached worldid from
+  // before that move wouldn't error — it'd just silently load the wrong
+  // world with no indication anything was off. Always resolving fresh on
+  // login is the only way to guarantee correctness here, so this runs once
+  // per login/session-restore rather than once per account.
+  async _resolveWorldId() {
+    const userid = this.session.user.userid;
+    try {
+      const save = await this.api.getOwnSave(this.session.token, userid);
+      const worldid = save?.worldid || "";
+      if (worldid) this.session.map = { ...this.session.map, worldid };
+    } catch (err) {
+      this._showStatus(err?.message || "Failed to resolve your world.");
     }
-    this._loadAbortController = new AbortController();
-    const signal = this._loadAbortController.signal;
+  }
 
-    // Snapshot the visible area right now
-    const visibleKeys = this.renderer.getVisibleChunkKeys(2);
-    const toLoad = [...visibleKeys].filter(
-      k => !this._loadedChunks.has(k) && !this._pendingChunks.has(k)
-    );
+  // Shared by _initMapLoad, the refresh button, the snapshot poll, and
+  // export.js's ensureBackgroundLoadDone() — concurrent callers coalesce onto
+  // one in-flight fetch rather than firing duplicate requests.
+  _loadWorld(opts = {}) {
+    if (this._worldLoadPromise) return this._worldLoadPromise;
+    this._worldLoadPromise = this._doLoadWorld(opts).finally(() => {
+      this._worldLoadPromise = null;
+    });
+    return this._worldLoadPromise;
+  }
 
-    if (!toLoad.length) {
+  async _doLoadWorld({ useCache = false, force = false, retriedWorldId = false } = {}) {
+    if (!this.session || !this.renderer) return;
+    const myGeneration = this._worldLoadGeneration;
+
+    const worldid = this.session.map?.worldid || "";
+    const token   = this.session.token;
+    this.renderer.myUserId = this.session.user.userid;
+
+    let terrainBytes = null;
+    let snapshot      = null;
+
+    if (useCache && !force) {
+      try {
+        const [cachedTerrain, cachedSnapshot] = await Promise.all([
+          sessionCacheGet(buildTerrainCacheKey(worldid)),
+          sessionCacheGet(buildSnapshotCacheKey(worldid)),
+        ]);
+        // A newer login (or a logout) superseded this load while the cache
+        // read was in flight — abandon it rather than write a stale result.
+        if (myGeneration !== this._worldLoadGeneration) return;
+        if (cachedTerrain?.bytes)   { terrainBytes = cachedTerrain.bytes;   this._terrainEtag  = cachedTerrain.etag ?? null; }
+        if (cachedSnapshot?.snapshot) { snapshot   = cachedSnapshot.snapshot; this._snapshotEtag = cachedSnapshot.etag ?? null; }
+
+        // Paint immediately from cache while the network call below revalidates.
+        if (terrainBytes && snapshot) {
+          this.renderer.loadWorld(terrainBytes, snapshot);
+          this._terrainBytes = terrainBytes;
+          this._worldLoaded  = true;
+          this._hideOverlay();
+          this._updateSearchEntries();
+          this._updateFilterCount();
+          this._autoFindHome();
+        }
+      } catch { /* no cache, or a read failed — fall through to a normal fetch */ }
+    }
+
+    if (!terrainBytes) this._showOverlay("Loading world map...");
+
+    let stepsDone = 0;
+    const bump = () => { stepsDone++; this._showProgress("Loading world", stepsDone, 2); };
+    this._showProgress("Loading world", 0, 2);
+
+    let terrainResult, snapshotResult;
+    try {
+      [terrainResult, snapshotResult] = await Promise.all([
+        this.api.getTerrain(token, worldid, force ? null : this._terrainEtag).then(r => { bump(); return r; }),
+        this.api.getSnapshot(token, worldid, force ? null : this._snapshotEtag).then(r => { bump(); return r; }),
+      ]);
+    } catch (err) {
+      // worldid is resolved once at login and held in memory for the rest of
+      // the session — if the player relocates worlds mid-session (or the
+      // in-memory value is otherwise stale), the world it names becomes
+      // genuinely unknown to the server. Self-heal once by re-resolving it
+      // fresh rather than getting permanently stuck on a defunct world.
+      if (String(err?.message || "").includes("Unknown worldid") && !retriedWorldId) {
+        this.session.map = { ...this.session.map, worldid: "" };
+        await this._resolveWorldId();
+        if (this.session.map?.worldid) {
+          return this._doLoadWorld({ useCache, force: true, retriedWorldId: true });
+        }
+      }
+      this._showStatus(err?.message || "Failed to load the world map.");
+      // The overlay was switched on above ("Loading world map...") and never
+      // gets turned back off past this point otherwise — leaving it stuck
+      // there indefinitely. If a map is already showing, just reveal it
+      // again (the status line above already carries the error); if this
+      // was the very first load, show the error in the overlay itself since
+      // there's nothing else to reveal.
+      if (this._worldLoaded) this._hideOverlay();
+      else this._showOverlay(err?.message || "Failed to load the world map.");
+      throw err;
+    } finally {
+      setTimeout(() => this._hideProgress(), 600);
+    }
+
+    // Same check as above, now that the network round-trip has also had time
+    // for a newer login or a logout to come in behind this call.
+    if (myGeneration !== this._worldLoadGeneration) return;
+
+    let changed = false;
+
+    if (terrainResult.bytes) {
+      terrainBytes      = terrainResult.bytes;
+      this._terrainEtag = terrainResult.etag;
+      changed = true;
+      sessionCacheSet(buildTerrainCacheKey(worldid), { bytes: terrainBytes, etag: this._terrainEtag }).catch(() => {});
+    }
+
+    if (snapshotResult.snapshot) {
+      snapshot            = snapshotResult.snapshot;
+      this._snapshotEtag  = snapshotResult.etag;
+      changed = true;
+      sessionCacheSet(buildSnapshotCacheKey(worldid), { snapshot, etag: this._snapshotEtag }).catch(() => {});
+    }
+
+    if (!terrainBytes || !snapshot) {
+      // No cache and nothing new — a 304 with no prior data, i.e. a real failure.
+      this._showStatus("Failed to load the world map.");
       this._hideOverlay();
       return;
     }
 
-    // Sort by distance from viewport centre so nearest chunks load first.
-    // Convert viewport centre from world pixels to cell coordinates so it's
-    // on the same scale as the chunk origin keys (which are cell indices).
-    const { viewX, viewY, zoom } = this.renderer;
-    const W    = this.renderer.canvas.clientWidth;
-    const H    = this.renderer.canvas.clientHeight;
-    const wcx  = (viewX + W / zoom / 2) / MR2.hexColStep;  // cell X
-    const wcy  = (viewY + H / zoom / 2) / MR2.hexRowStep;  // cell Y
-    toLoad.sort((a, b) => {
-      const [ax, ay] = a.split(",").map(Number);
-      const [bx, by] = b.split(",").map(Number);
-      return (Math.abs(ax - wcx) + Math.abs(ay - wcy)) -
-             (Math.abs(bx - wcx) + Math.abs(by - wcy));
-    });
-
-    // Local counters — each _loadViewport call owns its own progress state
-    // so concurrent/aborted calls can't corrupt each other's numbers.
-    let done = 0;
-    const total = toLoad.length;
-    const onProgress = () => {
-      done++;
-      this._showProgress("Fetching", done, total);
-    };
-
-    this._showProgress("Fetching", 0, total);
-
-    const sem   = new Semaphore(8);
-    const token = this.session.token;
-
-    // Fire all, but skip queuing new work if the gate was cancelled
-    await Promise.all(toLoad.map(key => {
-      if (signal.aborted) return Promise.resolve();
-      return this._fetchChunk(key, token, sem, false, onProgress);
-    }));
-
-    if (!signal.aborted) {
-      this._hideOverlay();
-      this._updateSearchEntries();
-      this._updateFilterCount();
-      this._persistCellsDebounced();
-      setTimeout(() => this._hideProgress(), 1500);
+    if (changed || !this._worldLoaded) {
+      this.renderer.loadWorld(terrainBytes, snapshot);
     }
+
+    this._terrainBytes = terrainBytes;
+    this._worldLoaded  = true;
+    this._hideOverlay();
+    this._updateSearchEntries();
+    this._updateFilterCount();
+    this._autoFindHome();
   }
 
-  // Core chunk fetch.  Never aborted once started — abort logic lives in
-  // _loadViewport's gate, not here.  Both viewport and background loaders use this.
-  // onProgress is an optional callback owned by the caller (not instance state).
-  async _fetchChunk(key, token, sem, isBg, onProgress = null) {
-    if (this._loadedChunks.has(key) || this._pendingChunks.has(key)) return;
-
-    this._pendingChunks.add(key);
-    await sem.acquire();
-
-    const [x, y] = key.split(",").map(Number);
+  // Refresh button (↺): force a full revalidation right now. No automatic
+  // polling — refreshing is deliberately only ever triggered by this click.
+  async _refreshMap() {
+    if (!this.session) return;
+    this.selectedCell = null;
     try {
-      const result = await this.api.getMapArea(token, x, y);
-      if (result?.data) {
-        this.renderer.ingestArea(result.data);
-        this._loadedChunks.add(key);
-        this._persistChunksDebounced();
-      }
-    } catch { /* silently skip failed chunks */ }
-    finally {
-      sem.release();
-      this._pendingChunks.delete(key);
-      if (!isBg && onProgress) onProgress();
-    }
+      await this._loadWorld({ force: true });
+    } catch { /* _doLoadWorld already surfaced a status message */ }
   }
 
-  // Background full-map load — low priority (concurrency 4), cancellable.
-  async _startBackgroundLoad() {
-    if (!this.session || this._bgLoadActive) return;
+  // Bulk snapshot/terrain intentionally omit per-viewer/live fields —
+  // resources, monsters, truce, and online/under-attack lock state (see the
+  // MR2 Bulk Map Endpoints wiki). Backfill them for the clicked cell with a
+  // single getarea call scoped to just that cell.
+  async _enrichSelectedCell(cell) {
+    if (!cell || !this.session || cell.uid === undefined) return; // water cell — nothing to enrich
 
-    this._bgAbortController = new AbortController();
-    const signal = this._bgAbortController.signal;
+    const token   = this.session.token;
+    const request = ++this._enrichToken;
+
+    try {
+      const result = await this.api.getMapArea(token, cell.x, cell.y);
+      if (request !== this._enrichToken) return; // a later click superseded this one
+
+      const fresh = result?.data?.[cell.x]?.[cell.y];
+      if (!fresh) return;
+
+      const merged = { ...cell, ...fresh, x: cell.x, y: cell.y };
+      this.renderer.cells.set(cellKey(cell.x, cell.y), merged);
+
+      if (this.selectedCell?.x === cell.x && this.selectedCell?.y === cell.y) {
+        this.selectedCell = merged;
+        this.renderer.selectedCell = merged;
+        this._renderDetails(merged);
+      }
+    } catch { /* keep showing the bulk-derived data on failure */ }
+  }
+
+  // ── tnb/export compatibility shims ─────────────────────────────────────────
+  // export.js polls these directly rather than hooking a viewer-app event, so
+  // their names and rough behaviour are kept even though the world now loads
+  // in two requests instead of crawling chunks in the background.
+
+  _isFullMapLoaded() {
+    return this._worldLoaded;
+  }
+
+  async _startBackgroundLoad() {
+    if (this._worldLoaded) return;
     this._bgLoadActive = true;
     this._setBgLoadButtonState(true);
-
-    const allChunks = generateChunkCoords(); // sorted centre-out
-    const toLoad    = allChunks.filter(({ x, y }) => {
-      const k = `${x},${y}`;
-      return !this._loadedChunks.has(k) && !this._pendingChunks.has(k);
-    });
-
-    const token  = this.session.token;
-    const sem    = new Semaphore(4);
-    let done = 0;
-    const total  = toLoad.length;
-
-    this._showProgress("Background loading", 0, total);
-
-    await Promise.all(toLoad.map(async ({ x, y }) => {
-      if (signal.aborted) return;
-      const key = `${x},${y}`;
-      await this._fetchChunk(key, token, sem, true);
-      if (!signal.aborted) {
-        done++;
-        if (done % 50 === 0 || done === total) {
-          this._showProgress("Background loading", done, total);
-        }
-      }
-    }));
-
-    this._bgLoadActive = false;
-    this._bgAbortController = null;
-    this._setBgLoadButtonState(false);
-
-    if (!signal.aborted) {
-      this._updateSearchEntries();
-      this._updateFilterCount();
-      this._persistCellsDebounced();
-      this._showProgress("Full map loaded.", total, total);
-      setTimeout(() => this._hideProgress(), 2500);
+    try {
+      await this._loadWorld({ useCache: true });
+    } catch { /* _doLoadWorld already surfaced a status message */ }
+    finally {
+      this._bgLoadActive = false;
+      this._setBgLoadButtonState(false);
     }
   }
 
   _stopBackgroundLoad() {
-    if (this._bgAbortController) {
-      this._bgAbortController.abort();
-      this._bgAbortController = null;
-    }
+    // Nothing cancellable left to stop — the bulk load is two requests, not
+    // a long crawl — but keep this so callers relying on it don't break.
     this._bgLoadActive = false;
     this._setBgLoadButtonState(false);
-    this._hideProgress();
   }
 
   _toggleBackgroundLoad() {
-    if (this._bgLoadActive) {
-      this._stopBackgroundLoad();
-    } else {
-      this._startBackgroundLoad();
-    }
+    if (this._bgLoadActive) this._stopBackgroundLoad();
+    else this._startBackgroundLoad();
   }
 
   _setBgLoadButtonState(active) {
@@ -754,22 +783,10 @@ export class ViewerApp {
     if (!btn) return;
     btn.classList.toggle("bg-load-button--active", active);
     btn.setAttribute("aria-pressed", String(active));
-    btn.title = active
-      ? "Cancel background load"
-      : "Load the entire 800×800 map in the background";
+    btn.title = active ? "Loading..." : "Reload the full map from the server";
     btn.setAttribute("aria-label", btn.title);
     const label = btn.querySelector(".bg-load-label");
-    if (label) label.textContent = active ? "Stop loading" : "Load full map";
-  }
-
-  _onMapLoadComplete() {
-    // Kept for any future full-load path
-    this._hideOverlay();
-    this._updateSearchEntries();
-    this._updateFilterCount();
-    this._autoFindHome();
-    this._persistCellsDebounced();
-    setTimeout(() => this._hideProgress(), 2500);
+    if (label) label.textContent = active ? "Loading..." : "Reload map";
   }
 
   _autoFindHome() {
@@ -780,12 +797,10 @@ export class ViewerApp {
     }
   }
 
-  // Center the camera on a cell and immediately load any unloaded chunks
-  // that are now visible.  Use this for all programmatic jumps so the
-  // destination area is always filled in, even near map edges.
+  // Center the camera on a cell. The whole world is already resident, so
+  // unlike the old demand-loader this never needs to fetch anything.
   _jumpTo(cx, cy) {
     this.renderer.centerOn(cx, cy);
-    this._loadViewport();
   }
 
   _storeHomePos(x, y) {
@@ -808,26 +823,6 @@ export class ViewerApp {
     this.renderer.centerOn(MR2.mapWidth / 2, MR2.mapHeight / 2);
   }
 
-  // Debounced IndexedDB saves — avoids hammering storage on every chunk
-  _persistChunksDebounced() {
-    clearTimeout(this._saveChunksTimer);
-    this._saveChunksTimer = setTimeout(() => {
-      if (!this.session) return;
-      const key = buildLoadedChunksCacheKey(this.session.user.userid, this.session.map?.worldid || "");
-      sessionCacheSet(key, { chunks: [...this._loadedChunks] }).catch(() => {});
-    }, 2000);
-  }
-
-  _persistCellsDebounced() {
-    clearTimeout(this._saveCellsTimer);
-    this._saveCellsTimer = setTimeout(() => {
-      if (!this.session) return;
-      const key   = buildFullMapCacheKey(this.session.user.userid, this.session.map?.worldid || "");
-      const cells = [...this.renderer.cells.values()];
-      sessionCacheSet(key, { cells, ts: Date.now() }).catch(() => {});
-    }, 3000);
-  }
-
   // ─── Progress UI ─────────────────────────────────────────────────────────────
 
   _showProgress(message, done, total) {
@@ -836,17 +831,19 @@ export class ViewerApp {
     loadProgress.hidden = false;
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     if (loadProgressBar) loadProgressBar.style.width = `${pct}%`;
-    if (loadProgressText) loadProgressText.textContent = `${message} ${done} / ${total} chunks (${pct}%)`;
+    if (loadProgressText) loadProgressText.textContent = `${message}... (${pct}%)`;
   }
 
   _hideProgress() {
     if (this.elements.loadProgress) this.elements.loadProgress.hidden = true;
   }
 
-  _showOverlay(message) {
+  // innerHTML rather than textContent so WRONG_MAP_VERSION_MESSAGE's link can
+  // render — every caller passes a static, trusted string, never user input.
+  _showOverlay(html) {
     const overlay = this.elements.mapOverlay;
     if (!overlay) return;
-    overlay.dataset.message = message;
+    if (this.elements.mapOverlayMessage) this.elements.mapOverlayMessage.innerHTML = html;
     overlay.hidden = false;
   }
 
@@ -986,15 +983,10 @@ export class ViewerApp {
     return count;
   }
 
-  _isFullMapLoaded() {
-    // 800×800 map with 10×10 chunks = 6400 total chunks
-    return this._loadedChunks.size >= 6400;
-  }
-
+  // The whole world is always loaded once _worldLoaded is true, so outpost
+  // counts are exact — no more "partial load" hedge needed here.
   _formatOutpostCount(count) {
-    if (this._isFullMapLoaded()) return String(count);
-    // Partial load — make it clear the count may be incomplete
-    return `${count} loaded`;
+    return String(count);
   }
 
   // ─── Search ───────────────────────────────────────────────────────────────────

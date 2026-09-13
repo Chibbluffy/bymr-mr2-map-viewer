@@ -3,9 +3,9 @@ export const SESSION_CACHE_DB_NAME = "bym-mr2-viewer-session-cache";
 export const SERVER_SELECTION_STORAGE_KEY = "bym-mr2-viewer-server-selection";
 export const SESSION_CACHE_STORE_NAME = "entries";
 export const SESSION_CACHE_SESSION_KEY = "bym-mr2-viewer-session-id";
-export const FULL_MAP_CACHE_VERSION = 1;
-export const FULL_MAP_CACHE_KEY_PREFIX    = "bym-mr2-viewer-full-map";
-export const LOADED_CHUNKS_CACHE_KEY_PREFIX = "bym-mr2-viewer-loaded-chunks";
+export const WORLD_CACHE_VERSION = 1;
+export const TERRAIN_CACHE_KEY_PREFIX  = "bym-mr2-viewer-terrain";
+export const SNAPSHOT_CACHE_KEY_PREFIX = "bym-mr2-viewer-snapshot";
 export const HOME_POS_STORAGE_KEY_PREFIX    = "bym-mr2-viewer-home-pos";
 export const SEARCH_RESULT_LIMIT = 80;
 
@@ -32,8 +32,6 @@ export const MR2 = {
   hexColStep: 78,   // horizontal centre-to-centre distance = hexWidth * 3/4
   hexRowStep: 68,   // vertical   centre-to-centre distance = hexHeight
   hexColOffset: 34, // odd-column vertical shift = hexHeight / 2
-  // No server-side rate limit on /worldmapv2/getcellsforviewer
-  concurrency: 30,
   // Terrain height thresholds (MapRoomCell.as Update() / Terrain enum)
   terrain: {
     WATER1: 80,
@@ -54,6 +52,10 @@ export const MR2 = {
     OUTPOST:  3,   // player outpost
   },
 };
+
+// Mirrors server/src/enums/MapRoom.ts's MapRoomVersion — used to confirm an
+// account's world is actually MR2 before trying to load it as one.
+export const MapRoomVersion = { NONE: 0, V1: 1, V2: 2, V3: 3 };
 
 // Flat-top hex vertices: straight edges on top/bottom, points on left/right.
 // Bounding box 104 wide × 68 tall; vertices listed clockwise from upper-left.
@@ -98,6 +100,49 @@ export function getTerrainLabel(i) {
 
 // Wild monster tribes (same four as MR3)
 export const TRIBES = ["Legionnaire", "Kozu", "Abunakki", "Dreadnaut"];
+
+// ─── Wild-camp derivation ─────────────────────────────────────────────────────
+// Unattacked wild monster camps are never persisted to the DB, so
+// /worldmapv2/snapshot doesn't carry them — only main yards, outposts, and
+// camps that have actually been attacked. The server instead computes an
+// unattacked camp's tribe/level/baseid as a pure function of (x, y, worldid).
+// These mirror server/src/services/maproom/v2/calculateTribeLevel.ts and
+// server/src/utils/generateBaseId.ts exactly (per the MR2 Bulk Map Endpoints
+// wiki, verified against the live server across thousands of coordinates).
+
+export const MIN_TRIBE_LEVEL = {
+  Legionnaire: 25,
+  Kozu: 29,
+  Abunakki: 25,
+  Dreadnaut: 25,
+};
+
+export function tribeAt(x, y) {
+  return TRIBES[(x + y) % TRIBES.length];
+}
+
+export function levelAt(x, y) {
+  const tribe = tribeAt(x, y);
+  const low = MIN_TRIBE_LEVEL[tribe];
+  return ((x + y) % (45 - low)) + low;
+}
+
+// FNV-1a hash of the world uuid, folded to 24 bits. Math.imul is required
+// here to match the server's 32-bit multiply-with-wraparound.
+function worldIdTo24Bit(worldId) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < worldId.length; i++) {
+    hash ^= worldId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash & 0xffffff;
+}
+
+// MR2 base ids carry no version prefix: [worldHash: 8][x: 3][y: 3] = 14 digits.
+export function generateBaseId(worldId, x, y) {
+  const worldHash = (worldIdTo24Bit(worldId) % 90000000) + 10000000;
+  return `${worldHash}${String(x).padStart(3, "0")}${String(y).padStart(3, "0")}`;
+}
 
 export function cellKey(x, y) {
   return `${x},${y}`;
@@ -211,53 +256,6 @@ export async function fetchJson(url, options = {}) {
   return payload;
 }
 
-// ─── Cell IDs for bulk viewer loading ────────────────────────────────────────
-
-// Generate 10x10 chunk origin coordinates sorted nearest-centre first.
-// Used by the current /worldmapv2/getarea loader (6 400 chunks total).
-// Switch to generateAllCellIds once /worldmapv2/getcellsforviewer is live.
-export function generateChunkCoords() {
-  const step = 10;
-  const cx = MR2.mapWidth  / 2;
-  const cy = MR2.mapHeight / 2;
-  const coords = [];
-  for (let y = 0; y < MR2.mapHeight; y += step) {
-    for (let x = 0; x < MR2.mapWidth; x += step) {
-      const dist = Math.hypot(x + step / 2 - cx, y + step / 2 - cy);
-      coords.push({ x, y, dist });
-    }
-  }
-  coords.sort((a, b) => a.dist - b.dist);
-  return coords;
-}
-
-// Generate all 640 000 cell IDs sorted by squared distance from centre.
-// Ready for /worldmapv2/getcellsforviewer once that endpoint is deployed.
-// Uses TypedArrays (~10 MB peak) to avoid GC pressure from 640 K JS objects.
-// Returns 1-based IDs: id = y * WIDTH + x + 1.
-export function generateAllCellIds() {
-  const W = MR2.mapWidth, H = MR2.mapHeight;
-  const cx = W / 2, cy = H / 2;
-  const total = W * H;
-
-  const distSq = new Float32Array(total);
-  for (let y = 0; y < H; y++) {
-    const dy = y - cy;
-    for (let x = 0; x < W; x++) {
-      const dx = x - cx;
-      distSq[y * W + x] = dx * dx + dy * dy;
-    }
-  }
-
-  const indices = new Uint32Array(total);
-  for (let i = 0; i < total; i++) indices[i] = i;
-  indices.sort((a, b) => distSq[a] - distSq[b]);
-
-  const ids = new Array(total);
-  for (let i = 0; i < total; i++) ids[i] = indices[i] + 1;
-  return ids;
-}
-
 // ─── IndexedDB session cache ─────────────────────────────────────────────────
 
 let _db = null;
@@ -312,12 +310,14 @@ export async function sessionCacheDelete(key) {
   });
 }
 
-export function buildFullMapCacheKey(userId, worldId) {
-  return `${FULL_MAP_CACHE_KEY_PREFIX}:v${FULL_MAP_CACHE_VERSION}:${userId}:${worldId}`;
+// Terrain and snapshot are per-world, not per-viewer, so unlike the old
+// per-chunk cache these keys aren't scoped by userId.
+export function buildTerrainCacheKey(worldId) {
+  return `${TERRAIN_CACHE_KEY_PREFIX}:v${WORLD_CACHE_VERSION}:${worldId}`;
 }
 
-export function buildLoadedChunksCacheKey(userId, worldId) {
-  return `${LOADED_CHUNKS_CACHE_KEY_PREFIX}:v${FULL_MAP_CACHE_VERSION}:${userId}:${worldId}`;
+export function buildSnapshotCacheKey(worldId) {
+  return `${SNAPSHOT_CACHE_KEY_PREFIX}:v${WORLD_CACHE_VERSION}:${worldId}`;
 }
 
 export function buildHomePosKey(userId, worldId) {

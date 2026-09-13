@@ -3,6 +3,12 @@ import { MR2 } from "../../js/shared.js";
 
 const OUTPOST_FLINGER_RANGE = [0, 1, 2, 3, 4];
 
+// getarea is rate-limited server-side at 120 req/min/user (getAreaLimiter) —
+// stay comfortably under that rather than racing it.
+const GETAREA_RATE_LIMIT_PER_MIN = 120;
+const GETAREA_SAFETY_MARGIN = 0.85;
+const GETAREA_REQUEST_INTERVAL_MS = Math.ceil(60000 / (GETAREA_RATE_LIMIT_PER_MIN * GETAREA_SAFETY_MARGIN));
+
 window.addEventListener("DOMContentLoaded", () => {
   const app = new ViewerApp();
   app.start().catch((error) => {
@@ -45,6 +51,7 @@ function wireExport(app) {
       if (!app._isFullMapLoaded()) {
         setLabel("Loading full map…");
         await ensureBackgroundLoadDone(app);
+        await backfillHomeResources(app, setLabel);
         setLabel("Export CSV");
         runExport(app);
         return;
@@ -64,6 +71,7 @@ function wireExport(app) {
       setLabel("Refreshing…");
       await app._refreshMap();
       await ensureBackgroundLoadDone(app);
+      await backfillHomeResources(app, setLabel);
       setLabel("Export CSV");
       runExport(app);
     } finally {
@@ -89,6 +97,79 @@ async function ensureBackgroundLoadDone(app) {
     return;
   }
   await app._startBackgroundLoad();
+}
+
+// ─── Resource backfill ───────────────────────────────────────────────────────
+// The viewer now loads the map from /worldmapv2/terrain + /worldmapv2/snapshot,
+// which deliberately omit resources (`r`) — they change every tick and would
+// break the bulk endpoints' cacheability. Since this export only ever reads
+// resources off a player's HOME base (buildRows() below), the backfill only
+// needs getarea data for HOME cells — bounded by MapRoom2.MAX_PLAYERS (2500),
+// not by total occupied cells (which also counts every outpost and attacked
+// wild camp, tens of thousands more).
+//
+// getarea also returns an 11x11 block from whatever (x, y) origin you give
+// it, not just the one cell requested — so before fetching anything, homes
+// are grouped ("deduped") by the 10-aligned chunk origin that would cover
+// them. Any homes that happen to land in the same chunk are covered by a
+// single request instead of one each, which only reduces the request count
+// below MAX_PLAYERS — it never adds any.
+async function backfillHomeResources(app, setLabel) {
+  const homes = [];
+  for (const cell of app.renderer.cells.values()) {
+    if (cell.b === MR2.cellTypes.HOMECELL && cell.uid > 0) homes.push(cell);
+  }
+  if (!homes.length) return;
+
+  const chunks = groupHomesByChunk(homes);
+  const token  = app.session.token;
+  let homesDone = 0;
+
+  for (let i = 0; i < chunks.length; i++) {
+    setLabel?.(`Fetching resources… ${homesDone}/${homes.length}`);
+    await fetchChunkResources(app, token, chunks[i]);
+    homesDone += chunks[i].homes.length;
+    if (i < chunks.length - 1) await sleep(GETAREA_REQUEST_INTERVAL_MS);
+  }
+  setLabel?.(`Fetching resources… ${homesDone}/${homes.length}`);
+}
+
+// getarea's chunk origin is the multiple of 10 at or below the cell's
+// coordinate — matches how the old chunk-crawl loader tiled the map, and
+// guarantees the origin's 11x11 response (origin..origin+10) covers the cell.
+function groupHomesByChunk(homes) {
+  const byChunk = new Map(); // "originX,originY" → { originX, originY, homes[] }
+  for (const home of homes) {
+    const originX = Math.floor(home.x / 10) * 10;
+    const originY = Math.floor(home.y / 10) * 10;
+    const key = `${originX},${originY}`;
+    let chunk = byChunk.get(key);
+    if (!chunk) { chunk = { originX, originY, homes: [] }; byChunk.set(key, chunk); }
+    chunk.homes.push(home);
+  }
+  return [...byChunk.values()];
+}
+
+async function fetchChunkResources(app, token, chunk, attempt = 0) {
+  try {
+    const result = await app.api.getMapArea(token, chunk.originX, chunk.originY);
+    for (const home of chunk.homes) {
+      const fresh = result?.data?.[home.x]?.[home.y];
+      if (fresh?.r) home.r = fresh.r; // home is the same object stored in app.renderer.cells — mutate in place
+    }
+  } catch {
+    // Likely a 429 despite the pacing above (another tab/consumer sharing the
+    // same rate-limit bucket) — back off once and retry, then give up quietly
+    // and leave this chunk's homes' resources blank rather than stall the export.
+    if (attempt < 1) {
+      await sleep(2000);
+      return fetchChunkResources(app, token, chunk, attempt + 1);
+    }
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ─── Aggregation ───────────────────────────────────────────────────────────────

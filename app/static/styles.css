@@ -763,11 +763,19 @@ button { cursor: pointer; }
   color: var(--muted);
   font-weight: 600;
   letter-spacing: 0.04em;
+  padding: 24px;
+  text-align: center;
 }
 
 .map-overlay[hidden] { display: none; }
 
-.map-overlay::after { content: attr(data-message); }
+.map-overlay-message { max-width: 480px; }
+
+.map-overlay-message a {
+  color: #7fd8ff;
+  text-decoration: underline;
+  word-break: break-all;
+}
 
 /* ── Coordinates ─────────────────────────────────────────────────────────── */
 
@@ -803,7 +811,9 @@ button { cursor: pointer; }
   height: 36px;
 }
 
-/* Groups ↺ and "Load full map" side by side with a shared border radius */
+/* Rounds the outer corners of whichever buttons sit inside as one pill,
+   however many there are — see the #refresh-button and #export-button
+   overrides below for the single-button case. */
 .map-control-group {
   display: flex;
   gap: 0;
@@ -816,6 +826,15 @@ button { cursor: pointer; }
 .map-control-group > *:last-child {
   border-radius: 0 10px 10px 0;
   border-left: none;
+}
+
+/* refresh-button now sits alone in its .map-control-group (bg-load-button was
+   removed) — it matches both :first-child and :last-child above, so :last-child
+   wins the border-radius tie and its border-left: none still applies. Restore
+   full rounding and the left border, same fix already used for #export-button. */
+#refresh-button {
+  border-radius: 10px;
+  border-left: 1px solid var(--panel-border);
 }
 
 /* Labeled pill button for background load */
