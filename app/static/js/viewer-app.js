@@ -380,10 +380,11 @@ export class ViewerApp {
   }
 
   async start() {
-    // Portal dropdowns to <body> — backdrop-filter on .map-tool-panel breaks position:fixed children.
+    // Portal dropdowns to <body> — backdrop-filter on .map-tool-panel/.top-bar breaks position:fixed children.
     [
       this.elements.searchResults, this.elements.filterPlayerResults,
       this.elements.viewAsResults, this.elements.pathStartResults, this.elements.pathTargetResults,
+      this.elements.sessionPopover, this.elements.viewAsPopover, this.elements.locatePopover,
     ].forEach(el => { if (el) document.body.appendChild(el); });
 
     this.config = setViewerConfig({ ...STABLE_VIEWER_CONFIG });
@@ -510,6 +511,15 @@ export class ViewerApp {
     this._setupActivityModal();
     this._setupLocate();
 
+    // Re-clamp whichever top-bar popover is open on resize/orientation change —
+    // their position is computed once at open time, not tracked continuously.
+    window.addEventListener("resize", () => {
+      const { sessionPopover, sessionTriggerButton, viewAsPopover, viewAsTriggerButton, locatePopover, locateToggleButton } = this.elements;
+      if (sessionPopover && !sessionPopover.hidden) this._positionPopover(sessionPopover, sessionTriggerButton, 260, { align: "right" });
+      if (viewAsPopover && !viewAsPopover.hidden) this._positionPopover(viewAsPopover, viewAsTriggerButton, 280, { align: "right" });
+      if (locatePopover && !locatePopover.hidden) this._positionPopover(locatePopover, locateToggleButton, 300, { align: "left" });
+    });
+
     this.elements.detailsCloseButton?.addEventListener("click", () => this._deselectCell());
 
     // Keyboard shortcuts — ignored while typing (_isTypingInField()).
@@ -548,6 +558,7 @@ export class ViewerApp {
   _openSessionPopover() {
     const { sessionPopover, sessionTriggerButton, emailInput } = this.elements;
     if (!sessionPopover) return;
+    this._positionPopover(sessionPopover, sessionTriggerButton, 260, { align: "right" });
     sessionPopover.hidden = false;
     sessionTriggerButton?.setAttribute("aria-expanded", "true");
     if (!this.session) emailInput?.focus();
@@ -649,6 +660,7 @@ export class ViewerApp {
   _openViewAsPopover() {
     const { viewAsPopover, viewAsTriggerButton, viewAsInput } = this.elements;
     if (!viewAsPopover) return;
+    this._positionPopover(viewAsPopover, viewAsTriggerButton, 280, { align: "right" });
     viewAsPopover.hidden = false;
     viewAsTriggerButton?.setAttribute("aria-expanded", "true");
     viewAsInput?.focus();
@@ -1414,6 +1426,7 @@ export class ViewerApp {
   _openLocatePopover() {
     const { locatePopover, locateToggleButton, locateInput } = this.elements;
     if (!locatePopover) return;
+    this._positionPopover(locatePopover, locateToggleButton, 300, { align: "left" });
     locatePopover.hidden = false;
     locateToggleButton?.setAttribute("aria-expanded", "true");
     locateInput?.focus();
@@ -2213,6 +2226,21 @@ export class ViewerApp {
     dropdown.style.top   = `${rect.bottom + 4}px`;
     dropdown.style.left  = `${rect.left}px`;
     dropdown.style.width = `${rect.width}px`;
+  }
+
+  // Same idea as _positionDropdown(), but for a popover with its own preferred
+  // width rather than one that should match its anchor — clamped so it never
+  // runs off either edge of a narrow (phone-width) viewport. `align` picks
+  // which edge hugs the anchor when there's room, same as the old CSS anchoring.
+  _positionPopover(popover, anchor, preferredWidth, { align = "left" } = {}) {
+    const margin = 12;
+    const rect = anchor.getBoundingClientRect();
+    const width = Math.min(preferredWidth, window.innerWidth - margin * 2);
+    let left = align === "right" ? rect.right - width : rect.left;
+    left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+    popover.style.top   = `${rect.bottom + 8}px`;
+    popover.style.left  = `${left}px`;
+    popover.style.width = `${width}px`;
   }
 
   _updateSearchEntries() {

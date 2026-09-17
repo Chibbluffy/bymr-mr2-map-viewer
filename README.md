@@ -21,7 +21,7 @@ Map Room 2 is distinct from Map Room 1 (the original non-hex indoor map room) an
 
 ## Features
 
-The UI is a top bar (brand, world picker, a hideable login) plus a full-bleed map — there's no permanent sidebar; everything else floats and is hidden until you need it.
+The UI is a top bar (brand, world picker, a hideable login) plus a full-bleed map — there's no permanent sidebar; everything else floats and is hidden until you need it. The top bar's own popovers (Sign in, View as, Locate) are positioned in JS off the real trigger button and clamped to the viewport width (`_positionPopover()` in `viewer-app.js`), not fixed-offset CSS — on a narrow phone screen a popover anchored to a button near one edge would otherwise run straight off the other side.
 
 - **World picker** — pinned in the top bar; every MR2 world `poller.py` has polled, in one dropdown; switch worlds at any time, no login required
 - Full 800×800 hex world map rendered on an interactive canvas

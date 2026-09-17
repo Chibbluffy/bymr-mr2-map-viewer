@@ -238,11 +238,12 @@ button { cursor: pointer; }
 .session-trigger-button[aria-expanded="true"] .session-trigger-caret { transform: rotate(180deg); }
 
 .session-popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 260px;
-  z-index: 10;
+  /* Portaled to <body> (see viewer-app.js's start()) and position:fixed so it's
+     never clipped by .top-bar's own backdrop-filter, with top/left/width set in
+     JS via _positionPopover() before each show — clamped to fit any viewport width. */
+  position: fixed;
+  max-width: calc(100vw - 24px);
+  z-index: 90;
 }
 .session-popover[hidden] { display: none !important; }
 
@@ -286,11 +287,10 @@ button { cursor: pointer; }
 .view-as-trigger-button { font-weight: 500; opacity: 0.85; }
 
 .view-as-popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 280px;
-  z-index: 10;
+  /* Portaled + position:fixed, positioned via JS — see .session-popover above. */
+  position: fixed;
+  max-width: calc(100vw - 24px);
+  z-index: 90;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -304,11 +304,10 @@ button { cursor: pointer; }
 .top-bar-locate { position: relative; }
 
 .locate-popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  width: 300px;
-  z-index: 10;
+  /* Portaled + position:fixed, positioned via JS — see .session-popover above. */
+  position: fixed;
+  max-width: calc(100vw - 24px);
+  z-index: 90;
   display: flex;
   flex-direction: column;
   gap: 8px;
