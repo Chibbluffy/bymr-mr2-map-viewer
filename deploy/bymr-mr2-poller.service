@@ -1,0 +1,27 @@
+[Unit]
+Description=BYM MR2 Viewer - poller (keeps data/mr2.sqlite3 in sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/bymr-mr2-map-viewer
+EnvironmentFile=/home/ubuntu/bymr-mr2-map-viewer/.env
+ExecStart=/usr/bin/python3 /home/ubuntu/bymr-mr2-map-viewer/poller.py
+Restart=on-failure
+RestartSec=10
+
+# Light hardening — this process holds a server-to-server API key
+# (BYM_API_KEY), so it's worth not leaving fully unrestricted, but avoid
+# ProtectSystem=strict here: it needs a precise ReadWritePaths= carve-out
+# for data/, and that directory doesn't exist until poller.py's first run
+# creates it (db.py's connect()) — getting that ordering wrong silently
+# blocks every write. ProtectSystem=full only locks down /usr, /boot, /etc
+# (never touched here anyway) and needs no such carve-out.
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

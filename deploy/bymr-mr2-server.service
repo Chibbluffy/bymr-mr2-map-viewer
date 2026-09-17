@@ -1,0 +1,24 @@
+[Unit]
+Description=BYM MR2 Viewer - server (static files + read-only JSON API)
+After=network-online.target bymr-mr2-poller.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/bymr-mr2-map-viewer
+EnvironmentFile=/home/ubuntu/bymr-mr2-map-viewer/.env
+ExecStart=/usr/bin/python3 /home/ubuntu/bymr-mr2-map-viewer/server.py
+Restart=on-failure
+RestartSec=10
+
+# Never touches BYM_API_KEY or the outside BYM API at all (see server.py's
+# own doc comment) — read-only against the local SQLite DB and static
+# files, so this one can be locked down harder than the poller.
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
