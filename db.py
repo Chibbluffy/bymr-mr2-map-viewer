@@ -435,7 +435,7 @@ def activity_leaderboard(conn: sqlite3.Connection, world_uuid: str,
     ).fetchall()
     outposts = conn.execute(
         """
-        SELECT uid, COUNT(*) AS outpost_count
+        SELECT uid, MAX(name) AS name, COUNT(*) AS outpost_count
         FROM cells
         WHERE world_uuid = ? AND base_type = ? AND uid > 0
         GROUP BY uid
@@ -463,7 +463,7 @@ def activity_leaderboard(conn: sqlite3.Connection, world_uuid: str,
         e = entry(row["uid"], row["name"])
         e["loss_day"], e["loss_week"], e["loss_month"] = row["loss_day"], row["loss_week"], row["loss_month"]
     for row in outposts:
-        entry(row["uid"], None)["outpost_count"] = row["outpost_count"]
+        entry(row["uid"], row["name"])["outpost_count"] = row["outpost_count"]
 
     return list(by_uid.values())
 
