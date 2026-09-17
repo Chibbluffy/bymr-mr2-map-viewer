@@ -316,6 +316,11 @@ def list_events(conn: sqlite3.Connection, world_uuid: str, event_type: str | Non
 # page of groups in one round trip (see list_events_grouped()).
 _GROUP_OVERFETCH_FACTOR = 8
 
+# Safety cap on how many extra fetch rounds list_events_grouped() will do to
+# finish absorbing one oversized group (e.g. a mass-recycle of thousands of
+# outposts in one poll cycle) rather than splitting it across pages.
+_GROUP_MAX_FETCH_ROUNDS = 50
+
 # Grouping granularity by event age: coarser the older an event is, so a
 # burst of same-matchup events collapses into one row whether it happened
 # within one poll cycle or was spread across a few.
@@ -346,45 +351,65 @@ def list_events_grouped(conn: sqlite3.Connection, world_uuid: str, event_type: s
     losing your one home base vs. losing some outposts). Bucket size depends on event age (see
     _event_time_bucket()), so a burst collapses together even if it spans a few poll cycles.
 
+    Always fetches until a group boundary is confirmed rather than stopping at a fixed raw-row
+    count, so one oversized group (e.g. a mass-recycle of thousands of outposts in one poll cycle)
+    is never split across pages into several identical-looking "recycled N outposts" rows.
+
     Returns (groups, next_before_id); next_before_id is a raw event id, so
     passing it back as before_id resumes exactly where the underlying rows
     left off regardless of how many groups they collapsed into. None once
     there's nothing further to fetch.
     """
-    raw = list_events(conn, world_uuid, event_type, player, before_id, limit=limit * _GROUP_OVERFETCH_FACTOR)
-    exhausted = len(raw) < limit * _GROUP_OVERFETCH_FACTOR
+    fetch_size = limit * _GROUP_OVERFETCH_FACTOR
     current_time = now()
 
     groups: dict[tuple, dict] = {}
     order: list[tuple] = []
-    for row in raw:
-        # CLAIMED_FROM_WILD's old_uid is None (no prior baseline) or 0
-        # (already known wild) — same meaning, normalize to 0 for grouping.
-        group_old_uid = row["old_uid"] or 0 if row["event_type"] == "CLAIMED_FROM_WILD" else row["old_uid"]
-        bucket = _event_time_bucket(current_time, row["detected_at"])
-        key = (bucket, row["event_type"], group_old_uid, row["new_uid"], row["base_type"])
-        g = groups.get(key)
-        if g is None:
-            g = {
-                "event_type": row["event_type"],
-                "old_uid": row["old_uid"], "old_name": row["old_name"],
-                "new_uid": row["new_uid"], "new_name": row["new_name"],
-                "base_type": row["base_type"], "detected_at": row["detected_at"],
-                "old_x": row["old_x"], "old_y": row["old_y"],
-                "count": 0, "cells": [],
-            }
-            groups[key] = g
-            order.append(key)
-        g["count"] += 1
-        g["cells"].append({"x": row["x"], "y": row["y"], "id": row["id"]})
+    cursor = before_id
+    exhausted = False
+
+    for _ in range(_GROUP_MAX_FETCH_ROUNDS):
+        raw = list_events(conn, world_uuid, event_type, player, cursor, limit=fetch_size)
+        if not raw:
+            exhausted = True
+            break
+
+        for row in raw:
+            # CLAIMED_FROM_WILD's old_uid is None (no prior baseline) or 0
+            # (already known wild) — same meaning, normalize to 0 for grouping.
+            group_old_uid = row["old_uid"] or 0 if row["event_type"] == "CLAIMED_FROM_WILD" else row["old_uid"]
+            bucket = _event_time_bucket(current_time, row["detected_at"])
+            key = (bucket, row["event_type"], group_old_uid, row["new_uid"], row["base_type"])
+            g = groups.get(key)
+            if g is None:
+                g = {
+                    "event_type": row["event_type"],
+                    "old_uid": row["old_uid"], "old_name": row["old_name"],
+                    "new_uid": row["new_uid"], "new_name": row["new_name"],
+                    "base_type": row["base_type"], "detected_at": row["detected_at"],
+                    "old_x": row["old_x"], "old_y": row["old_y"],
+                    "count": 0, "cells": [],
+                }
+                groups[key] = g
+                order.append(key)
+            g["count"] += 1
+            g["cells"].append({"x": row["x"], "y": row["y"], "id": row["id"]})
+
+        cursor = raw[-1]["id"]
+
+        if len(raw) < fetch_size:
+            exhausted = True
+            break
+        if len(order) > limit:
+            break  # a group started after the limit-th one — everything before it is complete
 
     limited_keys = order[:limit]
     result = [groups[k] for k in limited_keys]
 
-    if not raw:
+    if not order:
         return result, None
     if len(limited_keys) == len(order):
-        return result, (None if exhausted else raw[-1]["id"])
+        return result, (None if exhausted else cursor)
 
     # Trimmed to `limit` groups — resume after the smallest id among every
     # raw row that went into an included group.
