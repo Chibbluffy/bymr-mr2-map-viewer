@@ -1207,6 +1207,13 @@ button { cursor: pointer; }
 }
 .activity-panel[hidden] { display: none !important; }
 
+.activity-events-scope {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
 .activity-filters {
   display: flex;
   flex-wrap: wrap;

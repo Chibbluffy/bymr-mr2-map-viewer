@@ -65,11 +65,14 @@ CREATE TABLE IF NOT EXISTS cells (
 );
 CREATE INDEX IF NOT EXISTS idx_cells_world_uid ON cells(world_uuid, uid);
 
--- event_type: TAKEOVER | CLAIMED_FROM_WILD | RECYCLED | RELOCATED
+-- event_type: TAKEOVER | CLAIMED_FROM_WILD | RECYCLED | RELOCATED | JOINED | RENAMED
+--             | KIT_BUILT | KIT_UPGRADED
 -- RELOCATED (a player moving their home base to a former outpost, once/day
 -- server-side) is the only type that uses old_x/old_y: x/y is the new home
 -- location, old_x/old_y is where it moved from. Every other type only ever
 -- has one location, so old_x/old_y stay NULL for them.
+-- old_tier/new_tier are only for KIT_BUILT/KIT_UPGRADED — see poller.py's
+-- _classify_outpost_kit_tier() for what they mean and how they were derived.
 -- batch_id: shared by every event from one poll_once() cycle (set in
 -- poller.py), so list_events_grouped() can collapse a burst into one row.
 CREATE TABLE IF NOT EXISTS world_events (
@@ -88,7 +91,9 @@ CREATE TABLE IF NOT EXISTS world_events (
   detected_at  INTEGER NOT NULL,
   batch_id     INTEGER,
   old_x        INTEGER,
-  old_y        INTEGER
+  old_y        INTEGER,
+  old_tier     TEXT,
+  new_tier     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_world_time ON world_events(world_uuid, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_world_type_time ON world_events(world_uuid, event_type, detected_at DESC);
@@ -118,6 +123,8 @@ _MIGRATIONS = [
     ("world_events", "batch_id", "ALTER TABLE world_events ADD COLUMN batch_id INTEGER"),
     ("world_events", "old_x", "ALTER TABLE world_events ADD COLUMN old_x INTEGER"),
     ("world_events", "old_y", "ALTER TABLE world_events ADD COLUMN old_y INTEGER"),
+    ("world_events", "old_tier", "ALTER TABLE world_events ADD COLUMN old_tier TEXT"),
+    ("world_events", "new_tier", "ALTER TABLE world_events ADD COLUMN new_tier TEXT"),
 ]
 
 
@@ -272,42 +279,55 @@ def insert_event(conn: sqlite3.Connection, world_uuid: str, x: int, y: int, base
                   event_type: str, old_uid: int | None, old_name: str | None,
                   new_uid: int | None, new_name: str | None,
                   old_damage: int | None, new_damage: int | None, batch_id: int | None = None,
-                  old_x: int | None = None, old_y: int | None = None) -> None:
+                  old_x: int | None = None, old_y: int | None = None,
+                  old_tier: str | None = None, new_tier: str | None = None) -> None:
     conn.execute(
         """
         INSERT INTO world_events (world_uuid, x, y, base_type, event_type, old_uid, old_name,
-                                   new_uid, new_name, old_damage, new_damage, detected_at, batch_id, old_x, old_y)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   new_uid, new_name, old_damage, new_damage, detected_at, batch_id,
+                                   old_x, old_y, old_tier, new_tier)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (world_uuid, x, y, base_type, event_type, old_uid, old_name, new_uid, new_name,
-         old_damage, new_damage, now(), batch_id, old_x, old_y),
+         old_damage, new_damage, now(), batch_id, old_x, old_y, old_tier, new_tier),
     )
 
 
-def list_events(conn: sqlite3.Connection, world_uuid: str, event_type: str | None = None,
+def list_events(conn: sqlite3.Connection, world_uuid: str | None, event_type: str | None = None,
                  player: str | None = None, before_id: int | None = None, limit: int = 50) -> list[sqlite3.Row]:
-    """`player` matches either side (old_name or new_name), substring case-insensitive.
+    """`world_uuid` is None for "every polled world at once" (the Events feed's all-worlds toggle);
+    each row then carries `world_name` too, from the join, so the caller can label it.
 
+    `player` matches either side (old_name or new_name), substring case-insensitive.
     `before_id` continues a previous page by id rather than OFFSET, so
     pagination stays correct even as new events keep inserting at the front.
     """
-    where = ["world_uuid = ?"]
-    params: list = [world_uuid]
+    where = ["w.map_version = 2"]
+    params: list = []
 
+    if world_uuid:
+        where.append("e.world_uuid = ?")
+        params.append(world_uuid)
     if event_type:
-        where.append("event_type = ?")
+        where.append("e.event_type = ?")
         params.append(event_type)
     if player:
-        where.append("(old_name LIKE ? ESCAPE '\\' OR new_name LIKE ? ESCAPE '\\')")
+        where.append("(e.old_name LIKE ? ESCAPE '\\' OR e.new_name LIKE ? ESCAPE '\\')")
         like = "%" + player.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         params.extend([like, like])
     if before_id is not None:
-        where.append("id < ?")
+        where.append("e.id < ?")
         params.append(before_id)
 
     params.append(limit)
     return conn.execute(
-        f"SELECT * FROM world_events WHERE {' AND '.join(where)} ORDER BY detected_at DESC, id DESC LIMIT ?",
+        f"""
+        SELECT e.*, w.name AS world_name
+        FROM world_events e
+        JOIN worlds w ON w.uuid = e.world_uuid
+        WHERE {' AND '.join(where)}
+        ORDER BY e.detected_at DESC, e.id DESC LIMIT ?
+        """,
         params,
     ).fetchall()
 
@@ -342,14 +362,16 @@ def _event_time_bucket(now: int, detected_at: int) -> int:
     return detected_at // size
 
 
-def list_events_grouped(conn: sqlite3.Connection, world_uuid: str, event_type: str | None = None,
+def list_events_grouped(conn: sqlite3.Connection, world_uuid: str | None, event_type: str | None = None,
                          player: str | None = None, before_id: int | None = None,
                          limit: int = 20) -> tuple[list[dict], int | None]:
-    """Same filters/pagination as list_events(), collapsed by (time bucket, event_type, old_uid, new_uid,
-    base_type) — "Player A took 5 outposts from Player B" instead of 5 rows. base_type is part of the
-    key so a home base is never merged into the same group as outposts (they read very differently:
-    losing your one home base vs. losing some outposts). Bucket size depends on event age (see
-    _event_time_bucket()), so a burst collapses together even if it spans a few poll cycles.
+    """Same filters/pagination as list_events(), collapsed by (world, time bucket, event_type, old_uid,
+    new_uid, base_type) — "Player A took 5 outposts from Player B" instead of 5 rows. world_uuid is part
+    of the key (even though it's usually already fixed by the `world_uuid` filter) purely so an all-worlds
+    fetch never accidentally merges two different worlds' events; base_type is part of the key so a home
+    base is never merged into the same group as outposts (they read very differently: losing your one
+    home base vs. losing some outposts). Bucket size depends on event age (see _event_time_bucket()), so
+    a burst collapses together even if it spans a few poll cycles.
 
     Always fetches until a group boundary is confirmed rather than stopping at a fixed raw-row
     count, so one oversized group (e.g. a mass-recycle of thousands of outposts in one poll cycle)
@@ -379,15 +401,17 @@ def list_events_grouped(conn: sqlite3.Connection, world_uuid: str, event_type: s
             # (already known wild) — same meaning, normalize to 0 for grouping.
             group_old_uid = row["old_uid"] or 0 if row["event_type"] == "CLAIMED_FROM_WILD" else row["old_uid"]
             bucket = _event_time_bucket(current_time, row["detected_at"])
-            key = (bucket, row["event_type"], group_old_uid, row["new_uid"], row["base_type"])
+            key = (row["world_uuid"], bucket, row["event_type"], group_old_uid, row["new_uid"], row["base_type"])
             g = groups.get(key)
             if g is None:
                 g = {
+                    "world_uuid": row["world_uuid"], "world_name": row["world_name"],
                     "event_type": row["event_type"],
                     "old_uid": row["old_uid"], "old_name": row["old_name"],
                     "new_uid": row["new_uid"], "new_name": row["new_name"],
                     "base_type": row["base_type"], "detected_at": row["detected_at"],
                     "old_x": row["old_x"], "old_y": row["old_y"],
+                    "old_tier": row["old_tier"], "new_tier": row["new_tier"],
                     "count": 0, "cells": [],
                 }
                 groups[key] = g

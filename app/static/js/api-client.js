@@ -150,8 +150,10 @@ export class ApiClient {
    * "Player A took 5 outposts from Player B" instead of 5 rows.
    * @returns {{groups: object[], nextBeforeId: number|null}}
    */
+  /** worldId omitted or falsy means every polled world at once, not just one. */
   async getEvents(worldId, { type, player, beforeId, limit = 20 } = {}) {
-    const params = { world: worldId, limit: String(limit) };
+    const params = { limit: String(limit) };
+    if (worldId) params.world = worldId;
     if (type) params.type = type;
     if (player) params.player = player;
     if (beforeId != null) params.before_id = String(beforeId);

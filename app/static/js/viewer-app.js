@@ -160,6 +160,14 @@ function _fmtRelTime(unixSeconds) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+// "MEGA+" -> "Mega+" — see poller.py's _classify_outpost_kit_tier().
+function _fmtKitTier(tier) {
+  if (!tier) return "Unknown Kit";
+  const m = tier.match(/^([A-Z]+)(\+*)$/);
+  if (!m) return escapeHtml(tier);
+  return escapeHtml(m[1][0] + m[1].slice(1).toLowerCase() + m[2]);
+}
+
 // Human-readable one-liner for a grouped world_events row (db.py's list_events_grouped()).
 function _describeEventGroup(g) {
   const place = g.base_type === MR2.cellTypes.HOMECELL ? "home base"
@@ -182,6 +190,18 @@ function _describeEventGroup(g) {
         : `${escapeHtml(g.old_name || "A player")} recycled ${n} ${place}`;
     case "RELOCATED":
       return `${escapeHtml(g.new_name || g.old_name || "A player")} relocated their main yard`;
+    case "JOINED":
+      return `${escapeHtml(g.new_name || "Someone")} joined this world`;
+    case "RENAMED":
+      return `${escapeHtml(g.old_name || "A player")} is now known as ${escapeHtml(g.new_name || "someone else")}`;
+    case "KIT_BUILT":
+      return n === 1
+        ? `${escapeHtml(g.new_name || "Someone")} built a ${_fmtKitTier(g.new_tier)} Kit`
+        : `${escapeHtml(g.new_name || "Someone")} built ${n} new outpost kits`;
+    case "KIT_UPGRADED":
+      return n === 1
+        ? `${escapeHtml(g.new_name || "Someone")} upgraded from ${_fmtKitTier(g.old_tier)} to ${_fmtKitTier(g.new_tier)} Kit`
+        : `${escapeHtml(g.new_name || "Someone")} upgraded ${n} outpost kits`;
     default:
       return escapeHtml(g.event_type);
   }
@@ -1140,6 +1160,9 @@ export class ViewerApp {
 
     activityEventsTypeOptions?.addEventListener("change", () => this._loadEvents({ reset: true }));
 
+    document.querySelectorAll('input[name="activity-events-scope"]')
+      .forEach((el) => el.addEventListener("change", () => this._loadEvents({ reset: true })));
+
     // Debounced — avoid firing a request per keystroke while typing a name.
     let playerFilterTimer = null;
     activityEventsPlayerInput?.addEventListener("input", () => {
@@ -1151,7 +1174,7 @@ export class ViewerApp {
 
     activityEventsList?.addEventListener("click", (e) => {
       const row = e.target.closest("[data-jump-x]");
-      if (row) this._jumpToCell(Number(row.dataset.jumpX), Number(row.dataset.jumpY));
+      if (row) this._jumpToCell(Number(row.dataset.jumpX), Number(row.dataset.jumpY), row.dataset.jumpWorld || null);
     });
 
     activityAlFilterInput?.addEventListener("input", () => this._renderActivityLeaderboard({ resetShown: true }));
@@ -1233,11 +1256,13 @@ export class ViewerApp {
     const singleType = checkedTypes.length === 1 ? checkedTypes[0] : null;
     const clientFilterTypes = !noFilter && checkedTypes.length > 1 ? new Set(checkedTypes) : null;
     const player = this.elements.activityEventsPlayerInput?.value?.trim() || "";
+    const scope = document.querySelector('input[name="activity-events-scope"]:checked')?.value || "world";
+    const worldId = scope === "all" ? null : this.selectedWorldId;
 
     this._setActivityStatus("activityEventsStatus", "Loading…");
 
     try {
-      const { groups, nextBeforeId } = await this.api.getEvents(this.selectedWorldId, {
+      const { groups, nextBeforeId } = await this.api.getEvents(worldId, {
         type: singleType, player, beforeId: this._eventsCursor, limit: 20,
       });
       const shown = clientFilterTypes ? groups.filter((g) => clientFilterTypes.has(g.event_type)) : groups;
@@ -1263,6 +1288,9 @@ export class ViewerApp {
       return;
     }
 
+    const scope = document.querySelector('input[name="activity-events-scope"]:checked')?.value || "world";
+    const showWorld = scope === "all";
+
     for (const g of groups) {
       // Single-event groups jump straight to their cell; multi-event groups are
       // a summary row ("Player A took 5 outposts from Player B") plus an always-
@@ -1274,19 +1302,24 @@ export class ViewerApp {
       const row = document.createElement(clickable ? "button" : "div");
       if (clickable) row.type = "button";
       row.className = "activity-list-item" + (clickable ? " activity-list-item--clickable" : "");
-      const coordsMeta = !clickable ? "" : g.event_type === "RELOCATED"
-        ? `<div class="activity-list-item-meta">(${g.old_x}, ${g.old_y}) → (${g.cells[0].x}, ${g.cells[0].y})</div>`
-        : `<div class="activity-list-item-meta">(${g.cells[0].x}, ${g.cells[0].y})</div>`;
+      const coords = g.event_type === "RELOCATED"
+        ? `(${g.old_x}, ${g.old_y}) → (${g.cells[0].x}, ${g.cells[0].y})`
+        : clickable ? `(${g.cells[0].x}, ${g.cells[0].y})` : "";
+      const worldLabel = showWorld ? escapeHtml(g.world_name || "") : "";
+      const metaLine = coords || worldLabel
+        ? `<div class="activity-list-item-meta">${[coords, worldLabel].filter(Boolean).join(" — ")}</div>`
+        : "";
       row.innerHTML = `
         <div class="activity-list-item-main">
           <div class="activity-list-item-desc">${_describeEventGroup(g)}</div>
-          ${coordsMeta}
+          ${metaLine}
         </div>
         <div class="activity-list-item-time">${_fmtRelTime(g.detected_at)}</div>
       `;
       if (clickable) {
         row.dataset.jumpX = g.cells[0].x;
         row.dataset.jumpY = g.cells[0].y;
+        row.dataset.jumpWorld = g.world_uuid;
       }
       list.appendChild(row);
 
@@ -1294,16 +1327,18 @@ export class ViewerApp {
         const cellsEl = document.createElement("div");
         cellsEl.className = "activity-event-cells";
         cellsEl.innerHTML = g.cells
-          .map((c) => `<button type="button" data-jump-x="${c.x}" data-jump-y="${c.y}">(${c.x}, ${c.y})</button>`)
+          .map((c) => `<button type="button" data-jump-x="${c.x}" data-jump-y="${c.y}" data-jump-world="${g.world_uuid}">(${c.x}, ${c.y})</button>`)
           .join("");
         list.appendChild(cellsEl);
       }
     }
   }
 
-  /** Closes the modal, centers on (x, y), and selects the cell if loaded. */
-  _jumpToCell(x, y) {
+  /** Closes the modal, switches world first if worldUuid differs (e.g. an all-worlds
+   * Events result), centers on (x, y), and selects the cell if loaded. */
+  async _jumpToCell(x, y, worldUuid = null) {
     this._closeActivityModal();
+    if (worldUuid && worldUuid !== this.selectedWorldId) await this._selectWorld(worldUuid);
     if (!this.renderer) return;
     this._jumpTo(x, y);
     const cell = this.renderer.getCellAt(x, y);

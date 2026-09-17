@@ -600,12 +600,20 @@
               </div>
 
               <div id="activity-panel-events" class="activity-panel">
+                <div class="activity-events-scope">
+                  <label class="filter-option"><input type="radio" name="activity-events-scope" value="world" checked> This world</label>
+                  <label class="filter-option"><input type="radio" name="activity-events-scope" value="all"> All worlds</label>
+                </div>
                 <div class="activity-filters">
                   <div id="activity-events-type-options" class="filter-options filter-options--inline">
                     <label class="filter-option"><input type="checkbox" value="TAKEOVER"> Takeovers</label>
                     <label class="filter-option"><input type="checkbox" value="CLAIMED_FROM_WILD"> Claimed from wild</label>
                     <label class="filter-option"><input type="checkbox" value="RECYCLED"> Recycled</label>
                     <label class="filter-option"><input type="checkbox" value="RELOCATED"> Relocated home</label>
+                    <label class="filter-option"><input type="checkbox" value="JOINED"> Joined world</label>
+                    <label class="filter-option"><input type="checkbox" value="RENAMED"> Renamed</label>
+                    <label class="filter-option"><input type="checkbox" value="KIT_BUILT"> Kit built</label>
+                    <label class="filter-option"><input type="checkbox" value="KIT_UPGRADED"> Kit upgraded</label>
                   </div>
                   <input
                     id="activity-events-player-input"

@@ -153,9 +153,9 @@ class ViewerHandler(SimpleHTTPRequestHandler):
 
     def _route_events(self, world: str | None, event_type: str | None, player: str | None,
                        before_id: int | None, limit: int) -> dict:
-        world = _require_world(world)
+        # world is optional here (unlike every other route) — omitted or blank means every polled world at once.
         with db.session() as conn:
-            groups, next_before_id = db.list_events_grouped(conn, world, event_type, player, before_id, limit)
+            groups, next_before_id = db.list_events_grouped(conn, world or None, event_type, player, before_id, limit)
         return {"groups": groups, "next_before_id": next_before_id}
 
     def _route_inactive(self, world: str | None, days: int) -> list[dict]:

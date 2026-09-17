@@ -91,13 +91,45 @@ def snapshot_to_cells(snapshot: dict) -> list[dict]:
     return cells
 
 
+# Outpost "kit" tiers, estimated from clusters in real polled empirevalue data —
+# there's no confirmed kit mechanic in the game's own source (CalcBaseValue() in
+# BASE.as just sums every building's build cost, no fixed starter package), but
+# across ~474k polled outposts the exact values 3,222,316 / 14,937,323 /
+# 41,526,414 are each shared by tens of thousands of outposts, with sharp valleys
+# between them — real, reproducible clusters, just not a source-confirmed name.
+# (name, baseline, range_lo, range_hi) — range_hi None means no ceiling (Ultra).
+_KIT_TIERS = [
+    ("REGULAR", 3_222_316, 3_000_000, 10_000_000),
+    ("MEGA", 14_937_323, 10_000_000, 25_000_000),
+    ("ULTRA", 41_526_414, 25_000_000, None),
+]
+_KIT_TIER_RANK = {name: i for i, (name, *_rest) in enumerate(_KIT_TIERS)}
+
+
+def _classify_outpost_kit_tier(value: int) -> str | None:
+    """Estimated kit tier for an outpost's current empirevalue, with a +/++ suffix for how far
+    above that tier's baseline it sits (+ past 5% over, ++ past 30% over — most outposts sit
+    within 5% of baseline). None below the lowest tier's floor: freshly captured, nothing built yet."""
+    for name, baseline, lo, hi in _KIT_TIERS:
+        if value >= lo and (hi is None or value < hi):
+            overage = (value - baseline) / baseline
+            suffix = "++" if overage >= 0.30 else "+" if overage >= 0.05 else ""
+            return name + suffix
+    return None
+
+
+def _kit_tier_rank(tier: str | None) -> int:
+    return _KIT_TIER_RANK.get(tier.rstrip("+"), -1) if tier else -1
+
+
 def diff_cells(world_uuid: str, old_by_pos: dict, new_cells: list[dict], batch_id: int) -> list[dict]:
     """Compares the previous poll's cells against this one and returns world_events rows to insert.
 
     old_by_pos is db.get_cells()'s return value; new_cells is
     snapshot_to_cells()'s output. A cell dropping out of the snapshot only
     logs RECYCLED if a player had owned it — a wild camp resetting isn't a
-    player-driven event.
+    player-driven event. See RELOCATED/RENAMED handling below for the two
+    event types that aren't a simple one-cell-at-a-time diff.
     """
     events = []
     new_by_pos = {(c["x"], c["y"]): c for c in new_cells}
@@ -124,12 +156,55 @@ def diff_cells(world_uuid: str, old_by_pos: dict, new_cells: list[dict], batch_i
     for old_home, new_home in relocations.values():
         events.append(_relocation_event(world_uuid, old_home, new_home, batch_id))
 
+    # Account renames: same uid, name differs from last poll. Checked once per
+    # uid (any one of their cells — a rename touches every cell's name at once,
+    # so comparing per-cell would fire the same rename N times over) rather than
+    # inside the per-cell loop below, which never even looks at same-uid cells.
+    old_names = {}
+    for old in old_by_pos.values():
+        if old["uid"] > 0:
+            old_names.setdefault(old["uid"], old["name"])
+    new_names = {}
+    new_homes_by_uid = {}
+    for new in new_cells:
+        if new["uid"] > 0:
+            new_names.setdefault(new["uid"], new["name"])
+            if new["base_type"] == HOMECELL:
+                new_homes_by_uid[new["uid"]] = new
+    for uid, new_name in new_names.items():
+        old_name = old_names.get(uid)
+        home = new_homes_by_uid.get(uid)
+        if old_name and new_name and old_name != new_name and home:
+            events.append(_rename_event(world_uuid, home, old_name, new_name, batch_id))
+
+    # Outpost kit tier changes: same owner, empirevalue crossed into a higher
+    # tier (see _classify_outpost_kit_tier()). A takeover already resets or
+    # inherits value on its own — this only looks at cells whose owner didn't
+    # change this poll, so it's purely about that owner's own investment.
+    for pos, new in new_by_pos.items():
+        if new["base_type"] != OUTPOST or new["uid"] <= 0:
+            continue
+        old = old_by_pos.get(pos)
+        if not old or old["uid"] != new["uid"]:
+            continue
+        old_tier = _classify_outpost_kit_tier(old["empirevalue"])
+        new_tier = _classify_outpost_kit_tier(new["empirevalue"])
+        if new_tier is None or _kit_tier_rank(new_tier) <= _kit_tier_rank(old_tier):
+            continue
+        event_type = "KIT_BUILT" if old_tier is None else "KIT_UPGRADED"
+        events.append(_kit_event(world_uuid, new, event_type, old_tier, new_tier, batch_id))
+
     for pos, new in new_by_pos.items():
         old = old_by_pos.get(pos)
 
         if old is None:
             if new["uid"] > 0:
-                events.append(_event(world_uuid, new, "CLAIMED_FROM_WILD", None, new, batch_id))
+                # A HOMECELL appearing from nothing is a fresh join — either a brand
+                # new player, or an existing account randomly relocated in from a
+                # different world after their empire was overrun. Anything else
+                # appearing from nothing is an ordinary wild-camp claim.
+                event_type = "JOINED" if new["base_type"] == HOMECELL else "CLAIMED_FROM_WILD"
+                events.append(_event(world_uuid, new, event_type, None, new, batch_id))
             continue
 
         if old["uid"] != new["uid"]:
@@ -163,6 +238,33 @@ def _relocation_event(world_uuid, old_home, new_home, batch_id) -> dict:
         "new_uid": new_home["uid"], "new_name": new_home["name"] or old_home["name"],
         "old_damage": None, "new_damage": None,
         "batch_id": batch_id,
+    }
+
+
+def _rename_event(world_uuid, home, old_name, new_name, batch_id) -> dict:
+    return {
+        "world_uuid": world_uuid,
+        "x": home["x"], "y": home["y"],
+        "base_type": HOMECELL,
+        "event_type": "RENAMED",
+        "old_uid": home["uid"], "old_name": old_name,
+        "new_uid": home["uid"], "new_name": new_name,
+        "old_damage": None, "new_damage": None,
+        "batch_id": batch_id,
+    }
+
+
+def _kit_event(world_uuid, outpost, event_type, old_tier, new_tier, batch_id) -> dict:
+    return {
+        "world_uuid": world_uuid,
+        "x": outpost["x"], "y": outpost["y"],
+        "base_type": OUTPOST,
+        "event_type": event_type,
+        "old_uid": outpost["uid"], "old_name": outpost["name"],
+        "new_uid": outpost["uid"], "new_name": outpost["name"],
+        "old_damage": None, "new_damage": None,
+        "batch_id": batch_id,
+        "old_tier": old_tier, "new_tier": new_tier,
     }
 
 
