@@ -1327,7 +1327,16 @@ export class ViewerApp {
         const cellsEl = document.createElement("div");
         cellsEl.className = "activity-event-cells";
         cellsEl.innerHTML = g.cells
-          .map((c) => `<button type="button" data-jump-x="${c.x}" data-jump-y="${c.y}" data-jump-world="${g.world_uuid}">(${c.x}, ${c.y})</button>`)
+          .map((c) => {
+            // A grouped KIT_BUILT/KIT_UPGRADED row can mix different tiers per cell — show
+            // each cell's own tier here since the group-level description can't say which.
+            const tier = c.new_tier
+              ? g.event_type === "KIT_UPGRADED" && c.old_tier
+                ? ` ${_fmtKitTier(c.old_tier)} → ${_fmtKitTier(c.new_tier)}`
+                : ` ${_fmtKitTier(c.new_tier)}`
+              : "";
+            return `<button type="button" data-jump-x="${c.x}" data-jump-y="${c.y}" data-jump-world="${g.world_uuid}">(${c.x}, ${c.y})${tier}</button>`;
+          })
           .join("");
         list.appendChild(cellsEl);
       }

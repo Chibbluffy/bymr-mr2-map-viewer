@@ -417,7 +417,13 @@ def list_events_grouped(conn: sqlite3.Connection, world_uuid: str | None, event_
                 groups[key] = g
                 order.append(key)
             g["count"] += 1
-            g["cells"].append({"x": row["x"], "y": row["y"], "id": row["id"]})
+            # old_tier/new_tier per cell too, not just on the group — KIT_BUILT/KIT_UPGRADED
+            # rows collapse into one group per player per bucket even though each cell in it
+            # can be a different tier, so the group-level fields alone can't tell them apart.
+            g["cells"].append({
+                "x": row["x"], "y": row["y"], "id": row["id"],
+                "old_tier": row["old_tier"], "new_tier": row["new_tier"],
+            })
 
         cursor = raw[-1]["id"]
 
