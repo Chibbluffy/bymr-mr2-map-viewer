@@ -1,6 +1,5 @@
 :root {
   color-scheme: dark;
-  --sidebar-panel-width: 280px;
 
   /* Natural world-map palette — matches the grass/water terrain of MR2 */
   --bg: #0f1710;
@@ -41,33 +40,6 @@ body {
   min-height: 100dvh;
 }
 
-/* ── Sidebar ──────────────────────────────────────────────────────────────── */
-
-.sidebar {
-  position: absolute;
-  top: 18px;
-  left: 18px;
-  bottom: 18px;
-  width: var(--sidebar-panel-width);
-  padding: 10px 0 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: none;
-  min-width: 0;
-  z-index: 7;
-  transition: transform 180ms ease;
-}
-
-.sidebar::-webkit-scrollbar { display: none; }
-
-#app.sidebar-collapsed .sidebar {
-  transform: translateX(calc(-100% - 28px));
-  pointer-events: none;
-}
-
 /* ── Map shell ────────────────────────────────────────────────────────────── */
 
 .map-shell {
@@ -86,6 +58,17 @@ body {
   background: #080e08;
   border: 1px solid var(--panel-border);
   box-shadow: 0 4px 32px var(--shadow);
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 10px;
+}
+
+/* Positioning anchor for canvas, toolbar, controls, overlay. */
+.map-surface {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 #map-canvas {
@@ -96,6 +79,51 @@ body {
   display: block;
   touch-action: none;
 }
+
+/* ── Top bar ──────────────────────────────────────────────────────────────── */
+
+.top-bar {
+  position: relative; /* containing block for the server/session popovers */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 2px 18px var(--shadow);
+  z-index: 9;
+  flex-shrink: 0;
+}
+
+.top-bar-brand {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.top-bar-brand strong { color: var(--accent-strong); }
+
+.top-bar-field { position: relative; }
+
+.top-bar-select {
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  max-width: 200px;
+}
+
+.top-bar-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.top-bar-spacer { flex: 1; }
 
 /* ── Panel base ───────────────────────────────────────────────────────────── */
 
@@ -179,41 +207,44 @@ button { cursor: pointer; }
 .icon-button:hover { background: var(--panel-strong); border-color: var(--accent); }
 .icon-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ── Server panel ─────────────────────────────────────────────────────────── */
+/* ── Session trigger + popover ────────────────────────────────────────────── */
 
-.server-select {
-  width: 100%;
+.top-bar-session { position: relative; }
+
+.session-trigger-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   background: rgba(0, 0, 0, 0.4);
   color: var(--text);
   border: 1px solid var(--panel-border);
   border-radius: 8px;
-  padding: 6px 10px;
+  padding: 6px 10px 6px 12px;
   font-size: 0.82rem;
-  margin-bottom: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.server-custom-fields { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-.server-custom-fields[hidden] { display: none !important; }
+.session-trigger-button:hover { background: var(--panel-strong); border-color: var(--accent); }
 
-.server-custom-field {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 0.75rem;
-  color: var(--muted);
+.session-trigger-caret {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  transition: transform 0.15s;
 }
 
-.server-custom-field input {
-  background: rgba(0, 0, 0, 0.4);
-  color: var(--text);
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 0.82rem;
-  width: 100%;
-}
+.session-trigger-button[aria-expanded="true"] .session-trigger-caret { transform: rotate(180deg); }
 
-/* ── Session panel ────────────────────────────────────────────────────────── */
+.session-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 260px;
+  z-index: 10;
+}
+.session-popover[hidden] { display: none !important; }
 
 .session-header {
   display: flex;
@@ -248,9 +279,132 @@ button { cursor: pointer; }
 
 .session-world { margin: 0 0 4px; font-size: 0.78rem; }
 
-/* ── Details panel ────────────────────────────────────────────────────────── */
+/* ── "View as" — client-only identity, no login ───────────────────────────── */
+
+.top-bar-viewas { position: relative; }
+
+.view-as-trigger-button { font-weight: 500; opacity: 0.85; }
+
+.view-as-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 280px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.view-as-popover[hidden] { display: none !important; }
+
+.view-as-help { font-size: 0.72rem; line-height: 1.4; }
+
+/* ── Locate — cross-world player search ────────────────────────────────────── */
+
+.top-bar-locate { position: relative; }
+
+.locate-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 300px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.locate-popover[hidden] { display: none !important; }
+
+.locate-help { font-size: 0.72rem; line-height: 1.4; }
+
+.locate-search-row { display: flex; gap: 6px; }
+/* .primary-button's own width:100% would otherwise become its flex-basis here,
+   squeezing the input down to almost nothing — pin both explicitly. */
+.locate-search-row .search-input { flex: 1 1 auto; min-width: 0; }
+.locate-search-row .primary-button { flex: 0 0 auto; width: auto; margin-top: 0; }
+
+.locate-results { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+
+.locate-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+}
+.locate-result:hover { background: rgba(255, 255, 255, 0.09); }
+.locate-result .locate-result-name { font-weight: 600; }
+.locate-result .locate-result-world { color: var(--muted); font-size: 0.75rem; }
+.locate-result .locate-result-coords { color: var(--muted); font-size: 0.75rem; }
+
+/* ── Cell detail panel — floating, top-left; click pins it, hover previews ── */
+
+.cell-detail-panel {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  width: 300px;
+  max-height: calc(100% - 70px);
+  overflow-y: auto;
+  z-index: 6;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-strong) transparent;
+}
+.cell-detail-panel::-webkit-scrollbar { width: 4px; }
+.cell-detail-panel::-webkit-scrollbar-track { background: transparent; }
+.cell-detail-panel::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
+.cell-detail-panel[hidden] { display: none !important; }
+
+.cell-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cell-detail-header h2 { margin: 0; }
+
+.cell-detail-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+
+.cell-detail-close:hover { background: var(--panel-strong); color: var(--text); }
 
 .details-content { font-size: 0.78rem; color: var(--text); }
+
+.detail-login-prompt {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.detail-login-prompt-text {
+  font-size: 0.74rem;
+  color: var(--muted);
+  line-height: 1.4;
+  margin: 0 0 8px;
+}
 
 .detail-row {
   display: flex;
@@ -283,6 +437,33 @@ button { cursor: pointer; }
 
 
 /* ── Legend ───────────────────────────────────────────────────────────────── */
+/* Floating flyout, toggled by #legend-toggle-button in .map-controls — hidden
+   by default, same treatment as the cell-detail panel above. */
+
+.legend-panel {
+  position: absolute;
+  bottom: 60px;
+  right: 14px;
+  width: 240px;
+  max-height: calc(100% - 90px);
+  overflow-y: auto;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-strong) transparent;
+}
+.legend-panel::-webkit-scrollbar { width: 4px; }
+.legend-panel::-webkit-scrollbar-track { background: transparent; }
+.legend-panel::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
+.legend-panel[hidden] { display: none !important; }
+
+#legend-toggle-button[aria-expanded="true"] {
+  background: var(--panel-strong);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
 
 .legend { display: flex; flex-direction: column; gap: 7px; }
 
@@ -315,9 +496,6 @@ button { cursor: pointer; }
 
 /* Terrain */
 .swatch-water  { background: #1a3480; }
-.swatch-sand   { background: #c8a050; }
-.swatch-land   { background: #5a9838; }
-.swatch-rock   { background: #7a7868; }
 
 /* Occupant overlays */
 .swatch-mine-home  { background: rgba(0,   232, 255, 0.90); }  /* mine  — home   — vivid cyan    */
@@ -330,36 +508,9 @@ button { cursor: pointer; }
 .swatch-filter { background: rgba(255, 50, 200, 0.85); }
 .swatch-dim    { background: rgba(0, 0, 0, 0.55); border: 1px solid rgba(255,255,255,0.1); }
 
-/* ── Sidebar toggle ───────────────────────────────────────────────────────── */
-
-.sidebar-toggle-button {
-  position: absolute;
-  top: 50%;
-  left: calc(18px + var(--sidebar-panel-width) + 12px);
-  transform: translateY(-50%);
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 64px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
-  background: rgba(8, 14, 8, 0.92);
-  color: var(--text);
-  box-shadow: 0 8px 24px var(--shadow);
-  cursor: pointer;
-  z-index: 8;
-  transition: left 180ms ease;
-}
-
-.sidebar-toggle-button svg { width: 16px; height: 16px; fill: currentColor; }
-
-#app.sidebar-collapsed .sidebar-toggle-button { left: 18px; }
-
-/* The close (X) icon is never used on desktop — always hide it */
-.sidebar-toggle-icon-close { display: none; }
-/* When collapsed, flip the < chevron horizontally to become > */
-#app.sidebar-collapsed .sidebar-toggle-icon-desktop { transform: scaleX(-1); }
+/* Path tool */
+.swatch-route         { background: #39ff6a; }
+.swatch-route-blocked { background: #ff4444; }
 
 /* ── Map toolbar — search and filter ─────────────────────────────────────── */
 
@@ -412,10 +563,7 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: 12px;
-  /* max-height is 100% of .map-panels-row, which is itself constrained by
-     the bar's bottom:60px — so this reliably stays above the map controls
-     regardless of viewport size or content length. */
-  max-height: 100%;
+  max-height: 100%; /* bounded by .map-panels-row, which stops above the map controls */
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -425,6 +573,92 @@ button { cursor: pointer; }
 .map-tool-panel::-webkit-scrollbar { width: 4px; }
 .map-tool-panel::-webkit-scrollbar-track { background: transparent; }
 .map-tool-panel::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
+
+/* ── Path toolbar — bottom-left, mirrors the search/filter bar's pattern ── */
+/* Panel comes first in source so it renders above the button; 54px bottom
+   offset leaves room for the coordinates badge. */
+
+.map-tool-bar-left {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  bottom: 54px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 8px;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.map-tool-bar-left > * { pointer-events: auto; }
+
+.path-panel { width: 320px; }
+
+.path-saved-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.path-saved-banner[hidden] { display: none !important; }
+
+.path-saved-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.path-endpoint-mode {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+
+.path-coords-fields {
+  display: flex;
+  gap: 8px;
+}
+.path-coords-fields[hidden] { display: none !important; }
+
+.path-coord-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  flex: 1;
+}
+
+.path-coord-field input {
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 0.82rem;
+  width: 100%;
+}
+
+.path-use-mine-button[hidden] { display: none !important; }
+.path-use-mine-button { margin-top: 6px; width: 100%; }
+
+.path-distance-readout { font-size: 0.8rem; }
+.path-distance-readout[hidden] { display: none !important; }
+
+.path-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding-top: 10px;
+}
+.path-results[hidden] { display: none !important; }
+
+.path-progress-readout { font-size: 0.75rem; margin-top: 4px; }
+
+.path-status:empty { display: none; }
 
 .map-tool-panel[hidden] { display: none !important; }
 
@@ -439,6 +673,8 @@ button { cursor: pointer; }
   border-radius: 8px;
   padding: 7px 10px;
   font-size: 0.82rem;
+  appearance: none; /* type="search" gets a native pill/rounded-corner rendering otherwise */
+  -webkit-appearance: none;
 }
 
 .search-input:focus { outline: 1px solid var(--accent); }
@@ -498,7 +734,6 @@ button { cursor: pointer; }
 }
 
 /* Filter panel specifics */
-.filter-panel[hidden] { display: none !important; }
 
 .filter-header {
   display: flex;
@@ -818,6 +1053,9 @@ button { cursor: pointer; }
   display: flex;
   gap: 0;
 }
+/* Export group defaults to [hidden] in the shared index.html (see app.js) —
+   the flex display above otherwise wins over the UA [hidden] style. */
+#export-button-group[hidden] { display: none !important; }
 
 .map-control-group > *:first-child {
   border-radius: 10px 0 0 10px;
@@ -828,10 +1066,8 @@ button { cursor: pointer; }
   border-left: none;
 }
 
-/* refresh-button now sits alone in its .map-control-group (bg-load-button was
-   removed) — it matches both :first-child and :last-child above, so :last-child
-   wins the border-radius tie and its border-left: none still applies. Restore
-   full rounding and the left border, same fix already used for #export-button. */
+/* Sole child of its group, so it matches both :first-child and :last-child
+   above — restore full rounding and the left border :last-child strips. */
 #refresh-button {
   border-radius: 10px;
   border-left: 1px solid var(--panel-border);
@@ -872,29 +1108,7 @@ button { cursor: pointer; }
   flex-shrink: 0;
 }
 
-/* Active (loading) state — green accent + pulsing */
-.bg-load-button--active {
-  border-color: var(--accent) !important;
-  color: var(--accent-strong) !important;
-  background: rgba(92, 184, 72, 0.12) !important;
-  animation: pulse-border 1.8s ease-in-out infinite;
-}
-
-.bg-load-button--active .bg-load-icon {
-  animation: spin 1.2s linear infinite;
-}
-
-@keyframes pulse-border {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(92, 184, 72, 0.4); }
-  50%       { box-shadow: 0 0 0 4px rgba(92, 184, 72, 0);  }
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-
-/* ── Export confirm modal ────────────────────────────────────────────────── */
+/* ── Modal base (currently just the Activity modal) ──────────────────────── */
 
 .modal-overlay {
   position: fixed;
@@ -910,17 +1124,240 @@ button { cursor: pointer; }
 
 .modal-panel { width: min(380px, 90vw); }
 
-.modal-message { margin: 8px 0 14px; }
-
-.modal-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 /* Export button sits alone in its own .map-control-group — the shared group
    rules assume two buttons and split the rounding/border between them. */
 #export-button {
   border-radius: 10px;
   border-left: 1px solid var(--panel-border);
 }
+
+.export-button-group { position: relative; }
+
+.export-resource-warning {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 220px;
+  margin: 0;
+  padding: 8px 10px;
+  background: rgba(28, 18, 4, 0.95);
+  border: 1px solid rgba(255, 176, 80, 0.4);
+  border-radius: 8px;
+  color: #ffcf8a;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  z-index: 10;
+}
+.export-resource-warning[hidden] { display: none !important; }
+
+/* ── Activity modal — events / leaderboard / inactive players ────────────── */
+
+.top-bar-icon-button { width: 32px; height: 32px; }
+
+.modal-panel.activity-modal-panel {
+  width: min(640px, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.activity-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.activity-modal-header h2 { margin: 0; }
+
+.activity-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--panel-border);
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.activity-tab {
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.activity-tab:hover { color: var(--text); }
+
+.activity-tab[aria-selected="true"] {
+  color: var(--accent-strong);
+  border-bottom-color: var(--accent);
+}
+
+.activity-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.activity-panel[hidden] { display: none !important; }
+
+.activity-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.activity-filters .search-input { flex: 1; min-width: 160px; }
+
+.activity-days-field { width: 160px; }
+
+.activity-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-strong) transparent;
+}
+.activity-list::-webkit-scrollbar { width: 4px; }
+.activity-list::-webkit-scrollbar-track { background: transparent; }
+.activity-list::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
+
+.activity-list-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 6px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font-size: 0.82rem;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.activity-list-item--clickable { cursor: pointer; }
+.activity-list-item--clickable:hover { background: var(--panel-strong); }
+
+.activity-list-item-main { flex: 1; min-width: 0; }
+
+.activity-list-item-desc { color: var(--text); }
+
+.activity-list-item-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin-top: 2px;
+}
+
+.activity-list-item-time {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.activity-list-item-gain-positive { color: #60d080; }
+.activity-list-item-gain-negative { color: #e06050; }
+
+.activity-list-empty {
+  color: var(--muted);
+  font-size: 0.82rem;
+  padding: 16px 6px;
+  text-align: center;
+}
+
+.activity-more-button { margin-top: 8px; flex-shrink: 0; }
+.activity-more-button[hidden] { display: none !important; }
+
+.activity-status { flex-shrink: 0; margin-top: 6px; }
+.activity-status:empty { display: none; }
+
+.activity-events-hint, .activity-table-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  margin: 0 0 8px;
+  flex-shrink: 0;
+}
+
+/* Grouped event rows — always-visible list of individual cells, each its own jump target */
+.activity-event-cells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 6px 10px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.activity-event-cells button {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 2px 6px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.activity-event-cells button:hover { background: var(--panel-strong); }
+
+/* Sortable leaderboard tables */
+.activity-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-strong) transparent;
+}
+.activity-table-wrap::-webkit-scrollbar { width: 4px; height: 4px; }
+.activity-table-wrap::-webkit-scrollbar-track { background: transparent; }
+.activity-table-wrap::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
+
+.activity-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.activity-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  color: var(--muted);
+  text-align: right;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--panel-border);
+}
+.activity-table th:first-child { text-align: left; }
+.activity-table th:hover { color: var(--text); }
+.activity-table th[data-sort-active]::after { content: " " attr(data-sort-dir); }
+
+.activity-table td {
+  text-align: right;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  white-space: nowrap;
+}
+.activity-table td:first-child { text-align: left; }
+
+.activity-table tr:hover td { background: rgba(255, 255, 255, 0.03); }
+
+.activity-gain { color: #60d080; }
+.activity-loss { color: #e06050; }

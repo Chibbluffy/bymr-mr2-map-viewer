@@ -4,12 +4,18 @@ import os
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 REPO_ROOT = Path(__file__).resolve().parent
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", REPO_ROOT / "app" / "static")).resolve()
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8081"))
+
+# Kept in sync with server.py's ViewerHandler for the same URL→file mapping.
+# Static-only: no /api/* routes here, so use server.py for anything but a
+# quick asset check.
+EXPORT_URL_PATHS = {"/tnb/export", "/tnb/export/", "/tnb/export/index.html"}
 
 
 class StaticViewerHandler(SimpleHTTPRequestHandler):
@@ -21,6 +27,11 @@ class StaticViewerHandler(SimpleHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         print(f"{self.address_string()} - {format % args}")
+
+    def translate_path(self, path: str) -> str:
+        if urlsplit(path).path in EXPORT_URL_PATHS:
+            return str(Path(self.directory) / "index.html")
+        return super().translate_path(path)
 
 
 def main() -> None:

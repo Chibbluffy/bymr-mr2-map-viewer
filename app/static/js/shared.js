@@ -1,12 +1,14 @@
 export const TOKEN_STORAGE_KEY = "bym-mr2-viewer-token";
 export const SESSION_CACHE_DB_NAME = "bym-mr2-viewer-session-cache";
-export const SERVER_SELECTION_STORAGE_KEY = "bym-mr2-viewer-server-selection";
 export const SESSION_CACHE_STORE_NAME = "entries";
 export const SESSION_CACHE_SESSION_KEY = "bym-mr2-viewer-session-id";
 export const WORLD_CACHE_VERSION = 1;
 export const TERRAIN_CACHE_KEY_PREFIX  = "bym-mr2-viewer-terrain";
 export const SNAPSHOT_CACHE_KEY_PREFIX = "bym-mr2-viewer-snapshot";
 export const HOME_POS_STORAGE_KEY_PREFIX    = "bym-mr2-viewer-home-pos";
+export const SELECTED_WORLD_STORAGE_KEY     = "bym-mr2-viewer-selected-world";
+export const ROUTE_STORAGE_KEY_PREFIX       = "bym-mr2-viewer-route";
+export const VIEW_AS_STORAGE_KEY_PREFIX     = "bym-mr2-viewer-view-as";
 export const SEARCH_RESULT_LIMIT = 80;
 
 export const DEFAULT_VIEWER_CONFIG = Object.freeze({
@@ -68,12 +70,8 @@ export const HEX_VERTICES = [
   [0,   34],  // left point  (0,     H/2)
 ];
 
-// ─── Terrain → tile asset path ───────────────────────────────────────────────
-// MR2 shares the same worldmap tile assets as MR3.  Heights differ so we define
-// our own mapping from MR2 terrain height ranges to tile filenames.
-// Two-colour terrain palette — water vs land.
-// Collapsed from 11 shades to avoid a mosaic of browns/greens bleeding through
-// the semi-transparent occupant overlays.
+// Two-colour terrain palette (water/land) — collapsed from 11 shades to avoid
+// a mosaic bleeding through the semi-transparent occupant overlays.
 export const MR2_TILE_DEFINITIONS = [
   { max: MR2.terrain.WATER3, fill: "#0f1c60" },  // all water depths — single dark navy
   { max: Infinity,           fill: "#28201a" },  // all land heights — single dark earth
@@ -101,14 +99,9 @@ export function getTerrainLabel(i) {
 // Wild monster tribes (same four as MR3)
 export const TRIBES = ["Legionnaire", "Kozu", "Abunakki", "Dreadnaut"];
 
-// ─── Wild-camp derivation ─────────────────────────────────────────────────────
-// Unattacked wild monster camps are never persisted to the DB, so
-// /worldmapv2/snapshot doesn't carry them — only main yards, outposts, and
-// camps that have actually been attacked. The server instead computes an
-// unattacked camp's tribe/level/baseid as a pure function of (x, y, worldid).
-// These mirror server/src/services/maproom/v2/calculateTribeLevel.ts and
-// server/src/utils/generateBaseId.ts exactly (per the MR2 Bulk Map Endpoints
-// wiki, verified against the live server across thousands of coordinates).
+// ─── Wild-camp derivation ───────────────────────────────────────────────────
+// Unattacked camps aren't in the bulk snapshot — computed here as a pure
+// function of (x, y, worldid), mirroring the server's own formula exactly.
 
 export const MIN_TRIBE_LEVEL = {
   Legionnaire: 25,
@@ -322,4 +315,12 @@ export function buildSnapshotCacheKey(worldId) {
 
 export function buildHomePosKey(userId, worldId) {
   return `${HOME_POS_STORAGE_KEY_PREFIX}:${userId}:${worldId}`;
+}
+
+export function buildRouteStorageKey(worldId) {
+  return `${ROUTE_STORAGE_KEY_PREFIX}:${worldId}`;
+}
+
+export function buildViewAsKey(worldId) {
+  return `${VIEW_AS_STORAGE_KEY_PREFIX}:${worldId}`;
 }

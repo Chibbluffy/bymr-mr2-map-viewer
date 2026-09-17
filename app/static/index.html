@@ -13,73 +13,539 @@
   <body>
     <div id="app">
       <main class="map-shell">
-        <section id="map-panel" class="map-panel panel">
-          <canvas id="map-canvas"></canvas>
+        <section class="map-panel panel">
 
-          <aside class="sidebar">
-            <div class="panel brand-panel">
-              <p class="eyebrow">Backyard Monsters Refitted</p>
-              <h1>Map Room 2 Viewer</h1>
-              <p class="muted">
-                Hex world map — 800×800 cells, water/sand/land/rock terrain.
-              </p>
-            </div>
+          <!-- Top bar — brand, world picker, session (all pinned, login hideable) -->
+          <header class="top-bar">
+            <div class="top-bar-brand"><strong>BYM</strong> Map Room 2 Viewer</div>
 
-            <div class="panel server-panel">
-              <p class="eyebrow">Server</p>
-              <select id="server-select" class="server-select">
-                <option value="stable" selected>Stable</option>
-                <option value="local">Local</option>
-                <option value="custom">Custom</option>
+            <div class="top-bar-field">
+              <select id="world-select" class="top-bar-select" disabled>
+                <option value="">Loading worlds…</option>
               </select>
-              <div id="server-custom-fields" class="server-custom-fields" hidden>
-                <label class="server-custom-field server-custom-url" for="server-host-input">
-                  <span>Host or full URL</span>
-                  <input id="server-host-input" type="text" placeholder="https://host:port or 127.0.0.1">
-                </label>
-                <label class="server-custom-field server-custom-port" for="server-port-input">
-                  <span>Port (if host only)</span>
-                  <input id="server-port-input" type="number" min="1" max="65535" inputmode="numeric" value="3001">
-                </label>
-                <label class="server-custom-field server-custom-apiversion" for="server-apiversion-input">
-                  <span>API Version</span>
-                  <input id="server-apiversion-input" type="text" placeholder="auto-detected">
-                </label>
-              </div>
             </div>
 
-            <div class="panel session-panel">
-              <div class="session-header">
-                <div>
-                  <p class="eyebrow">Session</p>
-                  <h2 id="session-name">Signed out</h2>
+            <button
+              id="activity-toggle-button"
+              class="icon-button top-bar-icon-button"
+              type="button"
+              aria-label="World activity"
+              title="World activity — events, leaderboard, inactive players"
+              disabled
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 12h4l2-7 4 14 2-7h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+
+            <div class="top-bar-field top-bar-locate">
+              <button
+                id="locate-toggle-button"
+                class="icon-button top-bar-icon-button"
+                type="button"
+                aria-label="Locate a player"
+                aria-expanded="false"
+                aria-haspopup="true"
+                title="Locate — find which world a player is currently in"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7Zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5Z" fill="currentColor" />
+                </svg>
+              </button>
+
+              <div id="locate-popover" class="session-popover locate-popover panel" hidden>
+                <p class="eyebrow">Locate</p>
+                <h2>Find a player across every polled world</h2>
+                <p class="muted locate-help">
+                  Looks up which world a player's home base is on right now — useful
+                  when they've relocated or recycled and no longer show up on the
+                  world you last saw them in.
+                </p>
+                <div class="locate-search-row">
+                  <input
+                    id="locate-input"
+                    class="search-input"
+                    type="search"
+                    placeholder="Player name"
+                    autocomplete="off"
+                    spellcheck="false"
+                  >
+                  <button id="locate-search-button" class="primary-button" type="button">Find</button>
                 </div>
-                <button id="logout-button" class="secondary-button" type="button" hidden>Log out</button>
+                <div id="locate-results" class="locate-results"></div>
+                <p id="locate-status" class="muted"></p>
               </div>
-              <p id="session-world" class="muted session-world" hidden></p>
-              <form id="login-form" class="login-form">
-                <label>
-                  <span>Email</span>
-                  <input id="email-input" name="email" type="email" autocomplete="username" required>
-                </label>
-                <label>
-                  <span>Password</span>
-                  <input id="password-input" name="password" type="password" autocomplete="current-password" required>
-                </label>
-                <button id="login-button" class="primary-button" type="submit">Sign in</button>
-              </form>
-              <p id="session-status" class="muted">Sign in with your BYM credentials.</p>
             </div>
 
-            <div class="panel details-panel">
-              <p class="eyebrow">Cell</p>
-              <h2 id="details-title">No selection</h2>
+            <div class="top-bar-spacer"></div>
+
+            <div class="top-bar-field top-bar-viewas">
+              <button
+                id="view-as-trigger-button"
+                class="session-trigger-button view-as-trigger-button"
+                type="button"
+                aria-expanded="false"
+                aria-haspopup="true"
+              >
+                <span id="view-as-trigger-label">View as…</span>
+              </button>
+
+              <div id="view-as-popover" class="session-popover view-as-popover panel" hidden>
+                <p class="eyebrow">View as</p>
+                <h2>Highlight your bases without logging in</h2>
+                <p class="muted view-as-help">
+                  Purely local — matches a username already visible on this world's map. It
+                  highlights which cells are yours and tracks route progress, but it can't
+                  unlock resource viewing; that still needs a real login.
+                </p>
+                <div class="search-shell">
+                  <input
+                    id="view-as-input"
+                    class="search-input"
+                    type="search"
+                    placeholder="Your player name on this world"
+                    autocomplete="off"
+                    spellcheck="false"
+                  >
+                  <div id="view-as-results" class="search-results" hidden></div>
+                </div>
+                <p id="view-as-status" class="muted"></p>
+                <button id="view-as-clear-button" class="secondary-button" type="button" hidden>Clear</button>
+              </div>
+            </div>
+
+            <div class="top-bar-field top-bar-session">
+              <button
+                id="session-trigger-button"
+                class="session-trigger-button"
+                type="button"
+                aria-expanded="false"
+                aria-haspopup="true"
+              >
+                <span id="session-trigger-label">Sign in</span>
+                <svg class="session-trigger-caret" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 10l5 5 5-5z" />
+                </svg>
+              </button>
+
+              <div id="session-popover" class="session-popover panel" hidden>
+                <div class="session-header">
+                  <div>
+                    <p class="eyebrow">Session</p>
+                    <h2 id="session-name">Signed out</h2>
+                  </div>
+                  <button id="logout-button" class="secondary-button" type="button" hidden>Log out</button>
+                </div>
+                <p id="session-world" class="muted session-world" hidden></p>
+                <form id="login-form" class="login-form">
+                  <label>
+                    <span>Email</span>
+                    <input id="email-input" name="email" type="email" autocomplete="username" required>
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input id="password-input" name="password" type="password" autocomplete="current-password" required>
+                  </label>
+                  <button id="login-button" class="primary-button" type="submit">Sign in</button>
+                </form>
+                <p id="session-status" class="muted">Optional — log in to see live resource data. Your credentials go straight to the game server, never to this app's own server.</p>
+              </div>
+            </div>
+          </header>
+
+          <div class="map-surface">
+            <canvas id="map-canvas"></canvas>
+
+            <!-- Floating cell-detail panel — hover previews, click pins it open -->
+            <div id="cell-detail-panel" class="cell-detail-panel panel" hidden>
+              <div class="cell-detail-header">
+                <h2 id="details-title">No selection</h2>
+                <button id="details-close-button" class="cell-detail-close" type="button" aria-label="Close" title="Close">×</button>
+              </div>
               <div id="details-content" class="details-content">
                 Hover or click a cell to inspect it.
               </div>
             </div>
 
-            <div class="panel legend-panel">
+            <!-- Search + Filter toolbar -->
+            <div class="map-tool-bar">
+
+              <!-- Button row -->
+              <div class="map-tool-buttons">
+                <button
+                  id="search-toggle-button"
+                  class="icon-button"
+                  type="button"
+                  aria-label="Open search"
+                  aria-expanded="false"
+                  title="Search players"
+                  disabled
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Zm6.86 10.44L21 20.08 19.58 21.5l-3.64-3.64 1.42-1.42Z" />
+                  </svg>
+                </button>
+                <button
+                  id="filter-toggle-button"
+                  class="icon-button"
+                  type="button"
+                  aria-label="Open filters"
+                  aria-expanded="false"
+                  title="Filter cells"
+                  disabled
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 6h16l-6 7v5l-4 2v-7L4 6Z" />
+                  </svg>
+                </button>
+              </div>
+
+              <!-- Panels row — search and filter sit side by side in normal flow -->
+              <div class="map-panels-row">
+
+                <div id="search-panel" class="map-tool-panel" hidden>
+                  <p class="eyebrow">Search</p>
+                  <div class="search-shell">
+                    <input
+                      id="search-input"
+                      class="search-input"
+                      type="search"
+                      placeholder="Search by username"
+                      autocomplete="off"
+                      spellcheck="false"
+                      disabled
+                    >
+                    <div id="search-results" class="search-results" hidden></div>
+                  </div>
+                </div>
+
+                <div id="filter-panel" class="map-tool-panel" hidden>
+                  <div class="filter-header">
+                    <div>
+                      <p class="eyebrow">Filter</p>
+                      <h2>Highlight Cells</h2>
+                    </div>
+                    <button id="filter-clear-button" class="secondary-button" type="button">Clear</button>
+                  </div>
+
+                  <div class="filter-section">
+                    <p class="filter-section-title">Player</p>
+                    <div class="search-shell">
+                      <div id="filter-player-tags-area" class="filter-player-tags-area">
+                        <!-- player chips injected here by JS -->
+                        <input
+                          id="filter-player-input"
+                          class="filter-player-input"
+                          type="text"
+                          placeholder="Type to add players…"
+                          autocomplete="off"
+                          spellcheck="false"
+                        >
+                      </div>
+                      <div id="filter-player-results" class="search-results" hidden></div>
+                    </div>
+                    <p class="filter-help">Highlights all cells owned by selected players.</p>
+                  </div>
+
+                  <div class="filter-section">
+                    <p class="filter-section-title">Base Type</p>
+                    <div id="filter-base-options" class="filter-options">
+                      <label class="filter-option"><input type="checkbox" value="main"> Main Yard</label>
+                      <label class="filter-option"><input type="checkbox" value="outpost"> Outpost</label>
+                      <label class="filter-option"><input type="checkbox" value="wildmonster"> Wild Monster</label>
+                    </div>
+                  </div>
+
+                  <div class="filter-section">
+                    <p class="filter-section-title">Terrain</p>
+                    <div id="filter-terrain-options" class="filter-options">
+                      <label class="filter-option"><input type="checkbox" value="water"> Water</label>
+                      <label class="filter-option"><input type="checkbox" value="sand"> Sand</label>
+                      <label class="filter-option"><input type="checkbox" value="grass"> Grass / Land</label>
+                      <label class="filter-option"><input type="checkbox" value="rock"> Rock / Mountain</label>
+                    </div>
+                  </div>
+
+                  <div class="filter-section">
+                    <p class="filter-section-title">Tower Bonus — outposts only</p>
+                    <p class="filter-help">Higher ground → positive bonus. Avg altitude = 0%.</p>
+                    <div class="filter-range-values">
+                      <span id="tower-bonus-min-label" class="filter-range-value">−20%</span>
+                      <span id="tower-bonus-max-label" class="filter-range-value">+60%</span>
+                    </div>
+                    <div class="filter-range-track">
+                      <div id="tower-bonus-fill" class="filter-range-fill"></div>
+                      <input id="tower-bonus-min" class="filter-range-slider" type="range" min="-20" max="60" step="1" value="-20">
+                      <input id="tower-bonus-max" class="filter-range-slider" type="range" min="-20" max="60" step="1" value="60">
+                    </div>
+                  </div>
+
+                  <div class="filter-section">
+                    <p class="filter-section-title">Resource Bonus — outposts only</p>
+                    <p class="filter-help">Lower ground → positive bonus. Inverse of tower bonus.</p>
+                    <div class="filter-range-values">
+                      <span id="resource-bonus-min-label" class="filter-range-value">−40%</span>
+                      <span id="resource-bonus-max-label" class="filter-range-value">+25%</span>
+                    </div>
+                    <div class="filter-range-track">
+                      <div id="resource-bonus-fill" class="filter-range-fill"></div>
+                      <input id="resource-bonus-min" class="filter-range-slider" type="range" min="-40" max="25" step="1" value="-40">
+                      <input id="resource-bonus-max" class="filter-range-slider" type="range" min="-40" max="25" step="1" value="25">
+                    </div>
+                  </div>
+
+                  <div class="filter-section">
+                    <p class="filter-section-title">Flinger Range — outposts only</p>
+                    <p class="filter-help">Filter outposts by their flinger's cell reach (0 = no flinger).</p>
+                    <div id="filter-flinger-options" class="filter-options filter-options--inline">
+                      <label class="filter-option"><input type="checkbox" value="0"> Range 0</label>
+                      <label class="filter-option"><input type="checkbox" value="1"> Range 1</label>
+                      <label class="filter-option"><input type="checkbox" value="2"> Range 2</label>
+                      <label class="filter-option"><input type="checkbox" value="3"> Range 3</label>
+                      <label class="filter-option"><input type="checkbox" value="4"> Range 4</label>
+                    </div>
+                  </div>
+
+                  <div class="filter-footer">
+                    <p id="filter-match-count" class="filter-match-count muted">No filter active</p>
+                  </div>
+                </div>
+
+              </div><!-- end map-panels-row -->
+
+            </div><!-- end map-tool-bar -->
+
+            <!-- Path toolbar (route planner) — bottom-left -->
+            <div class="map-tool-bar-left">
+
+              <div id="path-panel" class="map-tool-panel path-panel" hidden>
+                <div class="filter-header">
+                  <div>
+                    <p class="eyebrow">Path</p>
+                    <h2>Plan a Takeover Route</h2>
+                  </div>
+                  <button id="path-clear-button" class="secondary-button" type="button">Clear</button>
+                </div>
+
+                <div id="path-saved-banner" class="path-saved-banner" hidden>
+                  <p class="muted">Saved route for this world.</p>
+                  <div class="path-saved-actions">
+                    <button id="path-load-button" class="secondary-button" type="button">Load</button>
+                    <button id="path-discard-saved-button" class="secondary-button" type="button">Discard</button>
+                  </div>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Start</p>
+                  <div class="path-endpoint-mode">
+                    <label class="filter-option"><input type="radio" name="path-start-mode" value="player" checked> Player</label>
+                    <label class="filter-option"><input type="radio" name="path-start-mode" value="coords"> Coordinates</label>
+                  </div>
+
+                  <div id="path-start-player-fields">
+                    <div class="search-shell">
+                      <input
+                        id="path-start-input"
+                        class="search-input"
+                        type="search"
+                        placeholder="Type a player name…"
+                        autocomplete="off"
+                        spellcheck="false"
+                      >
+                      <div id="path-start-results" class="search-results" hidden></div>
+                    </div>
+                    <p id="path-start-launch-info" class="path-distance-readout muted" hidden></p>
+                    <button id="path-start-use-mine" class="secondary-button path-use-mine-button" type="button" hidden>Use my base</button>
+                  </div>
+
+                  <div id="path-start-coords-fields" class="path-coords-fields" hidden>
+                    <label class="path-coord-field"><span>X</span><input id="path-start-x" type="number" min="0" max="799" inputmode="numeric" placeholder="0-799"></label>
+                    <label class="path-coord-field"><span>Y</span><input id="path-start-y" type="number" min="0" max="799" inputmode="numeric" placeholder="0-799"></label>
+                  </div>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Target</p>
+                  <div class="path-endpoint-mode">
+                    <label class="filter-option"><input type="radio" name="path-target-mode" value="player" checked> Player</label>
+                    <label class="filter-option"><input type="radio" name="path-target-mode" value="coords"> Coordinates</label>
+                  </div>
+
+                  <div id="path-target-player-fields">
+                  <div class="search-shell">
+                    <input
+                      id="path-target-input"
+                      class="search-input"
+                      type="search"
+                      placeholder="Type a player name…"
+                      autocomplete="off"
+                      spellcheck="false"
+                    >
+                    <div id="path-target-results" class="search-results" hidden></div>
+                  </div>
+                  </div>
+
+                  <div id="path-target-coords-fields" class="path-coords-fields" hidden>
+                    <label class="path-coord-field"><span>X</span><input id="path-target-x" type="number" min="0" max="799" inputmode="numeric" placeholder="0-799"></label>
+                    <label class="path-coord-field"><span>Y</span><input id="path-target-y" type="number" min="0" max="799" inputmode="numeric" placeholder="0-799"></label>
+                  </div>
+                </div>
+
+                <p id="path-distance-readout" class="path-distance-readout muted" hidden></p>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Kit / Jump Range</p>
+                  <div class="filter-options filter-options--inline">
+                    <label class="filter-option"><input type="radio" name="path-jumpcap" value="2"> Regular (2)</label>
+                    <label class="filter-option"><input type="radio" name="path-jumpcap" value="3"> Mega (3)</label>
+                    <label class="filter-option"><input type="radio" name="path-jumpcap" value="4" checked> Ultra (4)</label>
+                  </div>
+                  <label class="filter-option">
+                    <input type="checkbox" id="path-always-tier">
+                    Always use this tier for every hop (instead of cheapest per hop)
+                  </label>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Route Through</p>
+                  <div class="filter-options">
+                    <label class="filter-option"><input type="radio" name="path-mode" value="wild" checked> Wild tribes only</label>
+                    <label class="filter-option"><input type="radio" name="path-mode" value="players"> Allow player takeovers</label>
+                  </div>
+                  <label class="filter-option">
+                    <input type="checkbox" id="path-skip-hard-abunakki" checked>
+                    Avoid high-level Abunakki (35+) along the way
+                  </label>
+                </div>
+
+                <button id="path-plan-button" class="primary-button" type="button" disabled>Plan Route</button>
+
+                <div id="path-results" class="path-results" hidden>
+                  <div class="detail-row"><span>Hops</span><span id="path-result-hops">—</span></div>
+                  <div class="detail-row"><span>Kit cost (est.)</span><span id="path-result-cost">—</span></div>
+                  <div class="detail-row"><span>Takeover cost (est.)</span><span id="path-result-takeover">—</span></div>
+                  <div class="detail-row"><span>Grand total</span><span id="path-result-total">—</span></div>
+                  <div class="detail-row"><span>Kits used</span><span id="path-result-kits">—</span></div>
+                  <p id="path-progress-readout" class="path-progress-readout muted" hidden></p>
+                  <button id="path-save-button" class="secondary-button" type="button">Save this route</button>
+                </div>
+
+                <p id="path-status" class="muted path-status"></p>
+              </div>
+
+              <div class="map-tool-buttons">
+                <button
+                  id="path-toggle-button"
+                  class="icon-button"
+                  type="button"
+                  aria-label="Open path tool"
+                  aria-expanded="false"
+                  title="Plan a takeover route"
+                  disabled
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="5" cy="19" r="2" fill="currentColor" />
+                    <path d="M7.8 16.6 13.6 10.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-dasharray="2.2 2.4" />
+                    <circle cx="17.5" cy="6.5" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6" />
+                    <circle cx="17.5" cy="6.5" r="1.1" fill="currentColor" />
+                    <path d="M17.5 0.8v1.6M17.5 10.6v1.6M12 6.5h1.6M21.4 6.5h1.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none" />
+                  </svg>
+                </button>
+              </div>
+
+            </div><!-- end map-tool-bar-left -->
+
+            <!-- Load progress bar -->
+            <div id="load-progress" class="load-progress" hidden>
+              <div id="load-progress-bar" class="load-progress-bar"></div>
+              <span id="load-progress-text" class="load-progress-text">Loading...</span>
+            </div>
+
+            <div id="map-coordinates" class="map-coordinates" hidden>Cell -, -</div>
+
+            <div id="map-overlay" class="map-overlay"><div id="map-overlay-message" class="map-overlay-message">Loading...</div></div>
+
+            <div class="map-controls" aria-label="Map controls">
+              <button
+                id="legend-toggle-button"
+                class="icon-button map-control-button"
+                type="button"
+                aria-label="Show legend"
+                aria-expanded="false"
+                title="Show map legend"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 15a1.15 1.15 0 1 1 0 2.3A1.15 1.15 0 0 1 12 17Zm1.6-6.3c-.55.5-.7.75-.7 1.55v.25h-1.8v-.35c0-1.15.35-1.75 1.1-2.45l.55-.5c.35-.3.55-.6.55-1.05 0-.65-.5-1.1-1.35-1.1-.75 0-1.3.35-1.8.95l-1.25-1.1c.7-.95 1.7-1.5 3.15-1.5 1.85 0 3.15 1 3.15 2.6 0 .9-.4 1.5-1.3 2.3Z" />
+                </svg>
+              </button>
+
+              <!-- Reload group -->
+              <div class="map-control-group">
+                <button
+                  id="refresh-button"
+                  class="bg-load-button"
+                  type="button"
+                  aria-label="Reload the map from the server"
+                  title="Reload the map from the server"
+                  disabled
+                >
+                  <svg class="bg-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 5a7 7 0 1 1-6.65 9.18 1 1 0 1 1 1.9-.62A5 5 0 1 0 8 8.58V11a1 1 0 0 1-1.7.71l-3-3a1 1 0 0 1 0-1.42l3-3A1 1 0 0 1 8 5v1.46A6.96 6.96 0 0 1 12 5Z" />
+                  </svg>
+                  <span class="bg-load-label">Reload map</span>
+                </button>
+              </div>
+
+              <!-- Hidden here; only /tnb/export/ (app.js) reveals and wires this up. -->
+              <div id="export-button-group" class="map-control-group export-button-group" hidden>
+                <button
+                  id="export-button"
+                  class="bg-load-button"
+                  type="button"
+                  aria-label="Export map data to CSV"
+                  title="Export player data to CSV"
+                  disabled
+                >
+                  <svg class="bg-load-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M5 20h14v-2H5v2Zm7-18-5 5h3v6h4V7h3l-5-5Z" />
+                  </svg>
+                  <span id="export-button-label" class="bg-load-label">Export CSV</span>
+                </button>
+                <p id="export-resource-warning" class="export-resource-warning" hidden></p>
+              </div>
+
+              <!-- Navigation group -->
+              <button
+                id="find-home-button"
+                class="icon-button map-control-button"
+                type="button"
+                aria-label="Find home base"
+                title="Jump to home base (H)"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3 3 10.5V21h6v-5h6v5h6V10.5L12 3Z" />
+                </svg>
+              </button>
+              <button
+                id="zoom-out-button"
+                class="icon-button map-control-button"
+                type="button"
+                aria-label="Zoom out"
+                title="Zoom out (-)"
+              >−</button>
+              <button
+                id="zoom-in-button"
+                class="icon-button map-control-button"
+                type="button"
+                aria-label="Zoom in"
+                title="Zoom in (+)"
+              >+</button>
+            </div>
+
+            <!-- Legend flyout — hidden by default, toggled from the button above -->
+            <div id="legend-panel" class="legend-panel panel" hidden>
               <p class="eyebrow">Legend</p>
               <h2>Map Key</h2>
 
@@ -102,237 +568,128 @@
                 <div class="legend-item"><span class="legend-swatch swatch-filter"></span>Highlighted match</div>
                 <div class="legend-item"><span class="legend-swatch swatch-dim"></span>Dimmed (no match)</div>
               </div>
+
+              <p class="legend-section-label">Path</p>
+              <div class="legend">
+                <div class="legend-item"><span class="legend-swatch swatch-route"></span>Planned route / pending hop</div>
+                <div class="legend-item"><span class="legend-swatch swatch-route-blocked"></span>Someone else took that hop</div>
+              </div>
             </div>
+          </div><!-- end map-surface -->
 
-            <div class="panel credits-panel">
-              <p class="muted credits-copy">
-                Made with &lt;3 for BYM Refitted.
-                <br>
-                Full map load: ~6,400 chunks at 4 concurrent, ~10 min.
-              </p>
-            </div>
-          </aside>
+          <!-- Activity modal — events / leaderboard / inactive players -->
+          <div id="activity-modal" class="modal-overlay" hidden>
+            <div class="panel modal-panel activity-modal-panel">
+              <div class="activity-modal-header">
+                <div>
+                  <p class="eyebrow">Activity</p>
+                  <h2>World Activity</h2>
+                </div>
+                <button id="activity-close-button" class="cell-detail-close" type="button" aria-label="Close" title="Close">×</button>
+              </div>
 
-          <button
-            id="sidebar-toggle-button"
-            class="sidebar-toggle-button"
-            type="button"
-            aria-label="Hide sidebar"
-            aria-expanded="true"
-            title="Hide sidebar"
-            hidden
-          >
-            <svg class="sidebar-toggle-icon sidebar-toggle-icon-desktop" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M15.5 4.5 8 12l7.5 7.5-2.1 2.1L3.8 12l9.6-9.6 2.1 2.1Z" />
-            </svg>
-            <svg class="sidebar-toggle-icon sidebar-toggle-icon-close" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4 6.4 5Z" />
-            </svg>
-          </button>
+              <div class="activity-tabs" role="tablist">
+                <button id="activity-tab-events" class="activity-tab" type="button" role="tab" aria-selected="true">Events</button>
+                <button id="activity-tab-activity-leaderboard" class="activity-tab" type="button" role="tab" aria-selected="false">Activity</button>
+                <button id="activity-tab-empire-leaderboard" class="activity-tab" type="button" role="tab" aria-selected="false">Empire Points</button>
+                <button id="activity-tab-inactive" class="activity-tab" type="button" role="tab" aria-selected="false">Inactive</button>
+              </div>
 
-          <!-- Search + Filter toolbar -->
-          <div class="map-tool-bar">
-
-            <!-- Button row -->
-            <div class="map-tool-buttons">
-              <button
-                id="search-toggle-button"
-                class="icon-button"
-                type="button"
-                aria-label="Open search"
-                aria-expanded="false"
-                title="Search players"
-                disabled
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Zm6.86 10.44L21 20.08 19.58 21.5l-3.64-3.64 1.42-1.42Z" />
-                </svg>
-              </button>
-              <button
-                id="filter-toggle-button"
-                class="icon-button"
-                type="button"
-                aria-label="Open filters"
-                aria-expanded="false"
-                title="Filter cells"
-                disabled
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 6h16l-6 7v5l-4 2v-7L4 6Z" />
-                </svg>
-              </button>
-            </div>
-
-            <!-- Panels row — search and filter sit side by side in normal flow -->
-            <div class="map-panels-row">
-
-              <div id="search-panel" class="map-tool-panel" hidden>
-                <p class="eyebrow">Search</p>
-                <div class="search-shell">
+              <div id="activity-panel-events" class="activity-panel">
+                <div class="activity-filters">
+                  <div id="activity-events-type-options" class="filter-options filter-options--inline">
+                    <label class="filter-option"><input type="checkbox" value="TAKEOVER"> Takeovers</label>
+                    <label class="filter-option"><input type="checkbox" value="CLAIMED_FROM_WILD"> Claimed from wild</label>
+                    <label class="filter-option"><input type="checkbox" value="RECYCLED"> Recycled</label>
+                  </div>
                   <input
-                    id="search-input"
+                    id="activity-events-player-input"
                     class="search-input"
                     type="search"
-                    placeholder="Search by username"
+                    placeholder="Filter by player name…"
                     autocomplete="off"
                     spellcheck="false"
-                    disabled
                   >
-                  <div id="search-results" class="search-results" hidden></div>
                 </div>
+                <p class="muted activity-events-hint">Each row is everything that happened in one poll cycle between the same two players — click to see the individual cells.</p>
+                <div id="activity-events-list" class="activity-list"></div>
+                <button id="activity-events-more-button" class="secondary-button activity-more-button" type="button" hidden>Load more</button>
+                <p id="activity-events-status" class="muted activity-status"></p>
               </div>
 
-              <div id="filter-panel" class="map-tool-panel" hidden>
-                <div class="filter-header">
-                  <div>
-                    <p class="eyebrow">Filter</p>
-                    <h2>Highlight Cells</h2>
-                  </div>
-                  <button id="filter-clear-button" class="secondary-button" type="button">Clear</button>
+              <div id="activity-panel-activity-leaderboard" class="activity-panel" hidden>
+                <div class="activity-filters">
+                  <input
+                    id="activity-al-filter-input"
+                    class="search-input"
+                    type="search"
+                    placeholder="Filter by player name…"
+                    autocomplete="off"
+                    spellcheck="false"
+                  >
                 </div>
-
-                <div class="filter-section">
-                  <p class="filter-section-title">Player</p>
-                  <div class="search-shell">
-                    <div id="filter-player-tags-area" class="filter-player-tags-area">
-                      <!-- player chips injected here by JS -->
-                      <input
-                        id="filter-player-input"
-                        class="filter-player-input"
-                        type="text"
-                        placeholder="Type to add players…"
-                        autocomplete="off"
-                        spellcheck="false"
-                      >
-                    </div>
-                    <div id="filter-player-results" class="search-results" hidden></div>
-                  </div>
-                  <p class="filter-help">Highlights all cells owned by selected players.</p>
+                <p class="muted activity-table-hint">Gains and losses shown separately, not netted — taking 5 and losing 5 still shows as +5 / -5, not "0". Losing outposts doesn't count against a player on the Inactive tab.</p>
+                <div class="activity-table-wrap">
+                  <table id="activity-al-table" class="activity-table">
+                    <thead>
+                      <tr>
+                        <th data-sort="name">Player</th>
+                        <th data-sort="outpost_count">Outposts</th>
+                        <th data-sort="net_day">Day (+/-)</th>
+                        <th data-sort="net_week">Week (+/-)</th>
+                        <th data-sort="net_month">Month (+/-)</th>
+                      </tr>
+                    </thead>
+                    <tbody id="activity-al-tbody"></tbody>
+                  </table>
                 </div>
-
-                <div class="filter-section">
-                  <p class="filter-section-title">Base Type</p>
-                  <div id="filter-base-options" class="filter-options">
-                    <label class="filter-option"><input type="checkbox" value="main"> Main Yard</label>
-                    <label class="filter-option"><input type="checkbox" value="outpost"> Outpost</label>
-                    <label class="filter-option"><input type="checkbox" value="wildmonster"> Wild Monster</label>
-                  </div>
-                </div>
-
-                <div class="filter-section">
-                  <p class="filter-section-title">Terrain</p>
-                  <div id="filter-terrain-options" class="filter-options">
-                    <label class="filter-option"><input type="checkbox" value="water"> Water</label>
-                    <label class="filter-option"><input type="checkbox" value="sand"> Sand</label>
-                    <label class="filter-option"><input type="checkbox" value="grass"> Grass / Land</label>
-                    <label class="filter-option"><input type="checkbox" value="rock"> Rock / Mountain</label>
-                  </div>
-                </div>
-
-                <div class="filter-section">
-                  <p class="filter-section-title">Tower Bonus — outposts only</p>
-                  <p class="filter-help">Higher ground → positive bonus. Avg altitude = 0%.</p>
-                  <div class="filter-range-values">
-                    <span id="tower-bonus-min-label" class="filter-range-value">−20%</span>
-                    <span id="tower-bonus-max-label" class="filter-range-value">+60%</span>
-                  </div>
-                  <div class="filter-range-track">
-                    <div id="tower-bonus-fill" class="filter-range-fill"></div>
-                    <input id="tower-bonus-min" class="filter-range-slider" type="range" min="-20" max="60" step="1" value="-20">
-                    <input id="tower-bonus-max" class="filter-range-slider" type="range" min="-20" max="60" step="1" value="60">
-                  </div>
-                </div>
-
-                <div class="filter-section">
-                  <p class="filter-section-title">Resource Bonus — outposts only</p>
-                  <p class="filter-help">Lower ground → positive bonus. Inverse of tower bonus.</p>
-                  <div class="filter-range-values">
-                    <span id="resource-bonus-min-label" class="filter-range-value">−40%</span>
-                    <span id="resource-bonus-max-label" class="filter-range-value">+25%</span>
-                  </div>
-                  <div class="filter-range-track">
-                    <div id="resource-bonus-fill" class="filter-range-fill"></div>
-                    <input id="resource-bonus-min" class="filter-range-slider" type="range" min="-40" max="25" step="1" value="-40">
-                    <input id="resource-bonus-max" class="filter-range-slider" type="range" min="-40" max="25" step="1" value="25">
-                  </div>
-                </div>
-
-                <div class="filter-section">
-                  <p class="filter-section-title">Flinger Range — outposts only</p>
-                  <p class="filter-help">Filter outposts by their flinger's cell reach (0 = no flinger).</p>
-                  <div id="filter-flinger-options" class="filter-options filter-options--inline">
-                    <label class="filter-option"><input type="checkbox" value="0"> Range 0</label>
-                    <label class="filter-option"><input type="checkbox" value="1"> Range 1</label>
-                    <label class="filter-option"><input type="checkbox" value="2"> Range 2</label>
-                    <label class="filter-option"><input type="checkbox" value="3"> Range 3</label>
-                    <label class="filter-option"><input type="checkbox" value="4"> Range 4</label>
-                  </div>
-                </div>
-
-                <div class="filter-footer">
-                  <p id="filter-match-count" class="filter-match-count muted">No filter active</p>
-                </div>
+                <button id="activity-al-more-button" class="secondary-button activity-more-button" type="button" hidden>View more</button>
+                <p id="activity-al-status" class="muted activity-status"></p>
               </div>
 
-            </div><!-- end map-panels-row -->
+              <div id="activity-panel-empire-leaderboard" class="activity-panel" hidden>
+                <div class="activity-filters">
+                  <input
+                    id="activity-el-filter-input"
+                    class="search-input"
+                    type="search"
+                    placeholder="Filter by player name…"
+                    autocomplete="off"
+                    spellcheck="false"
+                  >
+                </div>
+                <p class="muted activity-table-hint">Current total empire value, summed across every cell a player owns right now (home base and every outpost) — not just their main yard.</p>
+                <div class="activity-table-wrap">
+                  <table id="activity-el-table" class="activity-table">
+                    <thead>
+                      <tr>
+                        <th data-sort="name">Player</th>
+                        <th data-sort="total_empirevalue">Total Empire Value</th>
+                        <th data-sort="total_cells">Cells</th>
+                        <th data-sort="delta_day">Day Δ</th>
+                        <th data-sort="delta_week">Week Δ</th>
+                        <th data-sort="delta_month">Month Δ</th>
+                      </tr>
+                    </thead>
+                    <tbody id="activity-el-tbody"></tbody>
+                  </table>
+                </div>
+                <button id="activity-el-more-button" class="secondary-button activity-more-button" type="button" hidden>View more</button>
+                <p id="activity-el-status" class="muted activity-status"></p>
+              </div>
 
-          </div><!-- end map-tool-bar -->
-
-          <!-- Load progress bar -->
-          <div id="load-progress" class="load-progress" hidden>
-            <div id="load-progress-bar" class="load-progress-bar"></div>
-            <span id="load-progress-text" class="load-progress-text">Loading...</span>
-          </div>
-
-          <div id="map-coordinates" class="map-coordinates" hidden>Cell -, -</div>
-
-          <div id="map-overlay" class="map-overlay"><div id="map-overlay-message" class="map-overlay-message">Loading...</div></div>
-
-          <div class="map-controls" aria-label="Map controls">
-            <!-- Reload + background-load group -->
-            <div class="map-control-group">
-              <button
-                id="refresh-button"
-                class="bg-load-button"
-                type="button"
-                aria-label="Reload the map from the server"
-                title="Reload the map from the server"
-                disabled
-              >
-                <svg class="bg-load-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 5a7 7 0 1 1-6.65 9.18 1 1 0 1 1 1.9-.62A5 5 0 1 0 8 8.58V11a1 1 0 0 1-1.7.71l-3-3a1 1 0 0 1 0-1.42l3-3A1 1 0 0 1 8 5v1.46A6.96 6.96 0 0 1 12 5Z" />
-                </svg>
-                <span class="bg-load-label">Reload map</span>
-              </button>
+              <div id="activity-panel-inactive" class="activity-panel" hidden>
+                <div class="activity-filters">
+                  <label class="path-coord-field activity-days-field">
+                    <span>No gains for at least (days)</span>
+                    <input id="activity-inactive-days" type="number" min="1" max="90" value="7" inputmode="numeric">
+                  </label>
+                </div>
+                <p class="muted activity-table-hint">Gaining empire value or an outpost resets this; losing outposts to an attacker does not — that's not a sign of the player's own inactivity.</p>
+                <div id="activity-inactive-list" class="activity-list"></div>
+                <p id="activity-inactive-status" class="muted activity-status"></p>
+              </div>
             </div>
-
-            <!-- Navigation group -->
-            <button
-              id="find-home-button"
-              class="icon-button map-control-button"
-              type="button"
-              aria-label="Find home base"
-              title="Jump to home base (H)"
-              disabled
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3 3 10.5V21h6v-5h6v5h6V10.5L12 3Z" />
-              </svg>
-            </button>
-            <button
-              id="zoom-out-button"
-              class="icon-button map-control-button"
-              type="button"
-              aria-label="Zoom out"
-              title="Zoom out (-)"
-            >−</button>
-            <button
-              id="zoom-in-button"
-              class="icon-button map-control-button"
-              type="button"
-              aria-label="Zoom in"
-              title="Zoom in (+)"
-            >+</button>
           </div>
         </section>
       </main>

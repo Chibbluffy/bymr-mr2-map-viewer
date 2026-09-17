@@ -1,142 +1,104 @@
-import { ViewerApp } from "../../js/viewer-app.js";
 import { MR2 } from "../../js/shared.js";
 
 const OUTPOST_FLINGER_RANGE = [0, 1, 2, 3, 4];
 
-// getarea is rate-limited server-side at 120 req/min/user (getAreaLimiter) —
-// stay comfortably under that rather than racing it.
+// getarea is rate-limited server-side at 120 req/min/user.
 const GETAREA_RATE_LIMIT_PER_MIN = 120;
 const GETAREA_SAFETY_MARGIN = 0.85;
 const GETAREA_REQUEST_INTERVAL_MS = Math.ceil(60000 / (GETAREA_RATE_LIMIT_PER_MIN * GETAREA_SAFETY_MARGIN));
 
-window.addEventListener("DOMContentLoaded", () => {
-  const app = new ViewerApp();
-  app.start().catch((error) => {
-    console.error(error);
-    const status = document.getElementById("session-status");
-    if (status) status.textContent = error.message || "Viewer failed to start.";
-  });
-
-  wireExport(app);
-});
-
-// ─── Session-state polling ────────────────────────────────────────────────────
-// export.js is intentionally self-contained — it does not modify viewer-app.js,
-// so it has no event hook for login/logout and just polls app.session instead.
-
-function wireExport(app) {
+/** Wires the export button — exports whichever world is currently selected. Called by app.js on /tnb/export/ only. */
+export function wireExport(app) {
   const exportButton = document.getElementById("export-button");
   if (!exportButton) return;
 
-  const exportLabel  = document.getElementById("export-button-label");
-  const modal        = document.getElementById("export-confirm-modal");
-  const refreshBtn   = document.getElementById("export-refresh-button");
-  const exportNowBtn = document.getElementById("export-now-button");
-  const cancelBtn    = document.getElementById("export-cancel-button");
-
+  const exportLabel = document.getElementById("export-button-label");
+  const warningEl = document.getElementById("export-resource-warning");
   const setLabel = (text) => { if (exportLabel) exportLabel.textContent = text; };
-  const showModal = () => { if (modal) modal.hidden = false; };
-  const hideModal = () => { if (modal) modal.hidden = true; };
+
+  const resourcesAvailable = () =>
+    !!(app.session?.map?.worldid && app.selectedWorldId && app.session.map.worldid === app.selectedWorldId);
 
   setInterval(() => {
-    if (!app.session) return;
-    if (exportButton.disabled && exportButton.dataset.busy !== "1") exportButton.disabled = false;
+    if (exportButton.dataset.busy === "1") return;
+    const hasWorld = !!app.selectedWorldId;
+    exportButton.disabled = !hasWorld;
+    exportButton.title = hasWorld
+      ? "Export this world's players to a CSV."
+      : "Waiting for a world to load…";
+
+    if (warningEl) {
+      const showWarning = hasWorld && !resourcesAvailable();
+      warningEl.hidden = !showWarning;
+      if (showWarning) {
+        warningEl.textContent = app.session
+          ? "You're logged in, but not into this world — the export will have no resource data."
+          : "Not logged in — the export will have no resource data. Log in to include it for your own world.";
+      }
+    }
   }, 300);
 
   exportButton.addEventListener("click", async () => {
-    if (!app.session) return;
+    if (!app.selectedWorldId) return;
     exportButton.disabled = true;
     exportButton.dataset.busy = "1";
     try {
-      if (!app._isFullMapLoaded()) {
-        setLabel("Loading full map…");
-        await ensureBackgroundLoadDone(app);
-        await backfillHomeResources(app, setLabel);
-        setLabel("Export CSV");
-        runExport(app);
-        return;
-      }
-      showModal();
+      await exportCurrentWorld(app, setLabel, resourcesAvailable());
     } finally {
-      exportButton.disabled = false;
-      delete exportButton.dataset.busy;
-    }
-  });
-
-  refreshBtn?.addEventListener("click", async () => {
-    hideModal();
-    exportButton.disabled = true;
-    exportButton.dataset.busy = "1";
-    try {
-      setLabel("Refreshing…");
-      await app._refreshMap();
-      await ensureBackgroundLoadDone(app);
-      await backfillHomeResources(app, setLabel);
       setLabel("Export CSV");
-      runExport(app);
-    } finally {
       exportButton.disabled = false;
       delete exportButton.dataset.busy;
     }
   });
-
-  exportNowBtn?.addEventListener("click", () => {
-    hideModal();
-    runExport(app);
-  });
-
-  cancelBtn?.addEventListener("click", () => hideModal());
 }
 
-async function ensureBackgroundLoadDone(app) {
-  if (app._bgLoadActive) {
-    await new Promise((resolve) => {
-      const check = () => (app._bgLoadActive ? setTimeout(check, 300) : resolve());
-      check();
-    });
-    return;
+// Fetches the snapshot fresh over /api/snapshot rather than using app.renderer, so the CSV never reflects a stale map view.
+async function exportCurrentWorld(app, setLabel, hasResources) {
+  const worldId = app.selectedWorldId;
+  const worldName = app.polledWorlds?.find((w) => w.uuid === worldId)?.name || worldId;
+
+  setLabel("Fetching world data…");
+  const { snapshot } = await app.api.getSnapshot(worldId);
+
+  if (hasResources) {
+    await backfillHomeResources(app, app.session.token, snapshot, setLabel);
   }
-  await app._startBackgroundLoad();
+
+  setLabel("Building CSV…");
+  const rows = buildRows(snapshot, { hasResources });
+  downloadCsv(toCsv(rows, { hasResources }), worldName);
 }
 
-// ─── Resource backfill ───────────────────────────────────────────────────────
-// The viewer now loads the map from /worldmapv2/terrain + /worldmapv2/snapshot,
-// which deliberately omit resources (`r`) — they change every tick and would
-// break the bulk endpoints' cacheability. Since this export only ever reads
-// resources off a player's HOME base (buildRows() below), the backfill only
-// needs getarea data for HOME cells — bounded by MapRoom2.MAX_PLAYERS (2500),
-// not by total occupied cells (which also counts every outpost and attacked
-// wild camp, tens of thousands more).
-//
-// getarea also returns an 11x11 block from whatever (x, y) origin you give
-// it, not just the one cell requested — so before fetching anything, homes
-// are grouped ("deduped") by the 10-aligned chunk origin that would cover
-// them. Any homes that happen to land in the same chunk are covered by a
-// single request instead of one each, which only reduces the request count
-// below MAX_PLAYERS — it never adds any.
-async function backfillHomeResources(app, setLabel) {
-  const homes = [];
-  for (const cell of app.renderer.cells.values()) {
-    if (cell.b === MR2.cellTypes.HOMECELL && cell.uid > 0) homes.push(cell);
+// Backfills home-base resources via getarea (the bulk snapshot omits them). Chunked by getarea's
+// 11x11 response window so multiple homes in the same chunk share one request. Mutates
+// snapshot.resourcesByUid, read back by buildRows() below.
+async function backfillHomeResources(app, token, snapshot, setLabel) {
+  const homesByUid = new Map(); // uid → {x, y}
+  for (const row of snapshot.cells) {
+    const [x, y, baseType, uid] = row;
+    if (baseType === MR2.cellTypes.HOMECELL && uid > 0) homesByUid.set(uid, { x, y });
   }
-  if (!homes.length) return;
+  if (!homesByUid.size) return;
 
-  const chunks = groupHomesByChunk(homes);
-  const token  = app.session.token;
+  const chunks = groupHomesByChunk([...homesByUid.values()]);
+  const resourcesByCoord = new Map(); // "x,y" → resources object
   let homesDone = 0;
 
   for (let i = 0; i < chunks.length; i++) {
-    setLabel?.(`Fetching resources… ${homesDone}/${homes.length}`);
-    await fetchChunkResources(app, token, chunks[i]);
+    setLabel?.(`Fetching resources… ${homesDone}/${homesByUid.size}`);
+    await fetchChunkResources(app, token, chunks[i], resourcesByCoord);
     homesDone += chunks[i].homes.length;
     if (i < chunks.length - 1) await sleep(GETAREA_REQUEST_INTERVAL_MS);
   }
-  setLabel?.(`Fetching resources… ${homesDone}/${homes.length}`);
+  setLabel?.(`Fetching resources… ${homesDone}/${homesByUid.size}`);
+
+  snapshot.resourcesByUid = new Map();
+  for (const [uid, pos] of homesByUid) {
+    const r = resourcesByCoord.get(`${pos.x},${pos.y}`);
+    if (r) snapshot.resourcesByUid.set(uid, r);
+  }
 }
 
-// getarea's chunk origin is the multiple of 10 at or below the cell's
-// coordinate — matches how the old chunk-crawl loader tiled the map, and
-// guarantees the origin's 11x11 response (origin..origin+10) covers the cell.
 function groupHomesByChunk(homes) {
   const byChunk = new Map(); // "originX,originY" → { originX, originY, homes[] }
   for (const home of homes) {
@@ -150,20 +112,17 @@ function groupHomesByChunk(homes) {
   return [...byChunk.values()];
 }
 
-async function fetchChunkResources(app, token, chunk, attempt = 0) {
+async function fetchChunkResources(app, token, chunk, resourcesByCoord, attempt = 0) {
   try {
     const result = await app.api.getMapArea(token, chunk.originX, chunk.originY);
     for (const home of chunk.homes) {
       const fresh = result?.data?.[home.x]?.[home.y];
-      if (fresh?.r) home.r = fresh.r; // home is the same object stored in app.renderer.cells — mutate in place
+      if (fresh?.r) resourcesByCoord.set(`${home.x},${home.y}`, fresh.r);
     }
   } catch {
-    // Likely a 429 despite the pacing above (another tab/consumer sharing the
-    // same rate-limit bucket) — back off once and retry, then give up quietly
-    // and leave this chunk's homes' resources blank rather than stall the export.
     if (attempt < 1) {
       await sleep(2000);
-      return fetchChunkResources(app, token, chunk, attempt + 1);
+      return fetchChunkResources(app, token, chunk, resourcesByCoord, attempt + 1);
     }
   }
 }
@@ -172,36 +131,38 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// ─── Aggregation ───────────────────────────────────────────────────────────────
-
-function aggregatePlayers(app) {
+// Works off a raw /api/snapshot payload directly — not app.renderer.cells.
+function aggregatePlayers(snapshot) {
   const players = new Map(); // uid → { uid, name, home, outposts[] }
-  for (const cell of app.renderer.cells.values()) {
-    if (!cell.uid) continue; // skip terrain and wild monster cells (uid 0/undefined)
-    let entry = players.get(cell.uid);
+  for (const row of snapshot.cells) {
+    const [x, y, baseType, uid, , , flinger] = row;
+    if (!uid) continue;
+    let entry = players.get(uid);
     if (!entry) {
-      entry = { uid: cell.uid, name: cell.n || "Unknown", home: null, outposts: [] };
-      players.set(cell.uid, entry);
+      const name = snapshot.players?.[String(uid)]?.name || "Unknown";
+      entry = { uid, name, home: null, outposts: [] };
+      players.set(uid, entry);
     }
-    if (cell.b === MR2.cellTypes.HOMECELL) entry.home = cell;
-    else if (cell.b === MR2.cellTypes.OUTPOST) entry.outposts.push(cell);
+    if (baseType === MR2.cellTypes.HOMECELL) entry.home = { x, y };
+    else if (baseType === MR2.cellTypes.OUTPOST) entry.outposts.push({ x, y, flinger });
   }
   return players;
 }
 
-function outpostFlingerRange(cell) {
-  const lv = Number(cell.f) || 0;
+function outpostFlingerRange(flingerLevel) {
+  const lv = Number(flingerLevel) || 0;
   return OUTPOST_FLINGER_RANGE[lv] ?? 4;
 }
 
-function buildRows(app) {
-  const players = aggregatePlayers(app);
+// hasResources false leaves resource fields undefined; toCsv() renders them as "N/A", not 0.
+function buildRows(snapshot, { hasResources }) {
+  const players = aggregatePlayers(snapshot);
   const rows = [];
   for (const entry of players.values()) {
-    const r = entry.home?.r && typeof entry.home.r === "object" ? entry.home.r : {};
+    const r = hasResources ? snapshot.resourcesByUid?.get(entry.uid) : null;
     let normalKits = 0, megaKits = 0, ultraKits = 0;
     for (const outpost of entry.outposts) {
-      const range = outpostFlingerRange(outpost);
+      const range = outpostFlingerRange(outpost.flinger);
       if (range === 2) normalKits++;
       else if (range === 3) megaKits++;
       else if (range === 4) ultraKits++;
@@ -210,11 +171,11 @@ function buildRows(app) {
       name: entry.name,
       homeX: entry.home?.x ?? "",
       homeY: entry.home?.y ?? "",
-      twigs: r.r1 ?? 0,
-      pebbles: r.r2 ?? 0,
-      putty: r.r3 ?? 0,
-      goo: r.r4 ?? 0,
-      resourceMax: r.r1max ?? r.r2max ?? r.r3max ?? r.r4max ?? 0,
+      twigs: r?.r1,
+      pebbles: r?.r2,
+      putty: r?.r3,
+      goo: r?.r4,
+      resourceMax: r?.r1max ?? r?.r2max ?? r?.r3max ?? r?.r4max,
       outposts: entry.outposts.length,
       normalKits,
       megaKits,
@@ -225,7 +186,7 @@ function buildRows(app) {
   return rows;
 }
 
-// ─── CSV ────────────────────────────────────────────────────────────────────────
+// ─── CSV ─────────────────────────────────────────────────────────────────
 
 const HEADERS = [
   "Name", "Home Coordinates",
@@ -234,37 +195,38 @@ const HEADERS = [
   "Estimated Normal Kits", "Estimated Mega Kits", "Estimated Ultra Kits",
 ];
 
+const NO_RESOURCE_DATA = "N/A (not logged into this world)";
+
 function escapeCsvField(value) {
   const s = String(value ?? "");
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function toCsv(rows) {
+function toCsv(rows, { hasResources }) {
   const lines = [HEADERS.join(",")];
   for (const row of rows) {
     const homeCoords = row.homeX === "" && row.homeY === "" ? "" : `${row.homeX}, ${row.homeY}`;
+    const resourceField = (v) => (hasResources ? v ?? 0 : NO_RESOURCE_DATA);
     lines.push([
       row.name, homeCoords,
-      row.twigs, row.pebbles, row.putty, row.goo, row.resourceMax,
+      resourceField(row.twigs), resourceField(row.pebbles), resourceField(row.putty),
+      resourceField(row.goo), resourceField(row.resourceMax),
       row.outposts, row.normalKits, row.megaKits, row.ultraKits,
     ].map(escapeCsvField).join(","));
   }
   return lines.join("\r\n");
 }
 
-function downloadCsv(csvText) {
+function downloadCsv(csvText, worldName) {
   const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const safeName = (worldName || "world").replace(/[^a-zA-Z0-9_-]+/g, "-");
   a.href = url;
-  a.download = `bym-mr2-export-${stamp}.csv`;
+  a.download = `bym-mr2-export-${safeName}-${stamp}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
-}
-
-function runExport(app) {
-  downloadCsv(toCsv(buildRows(app)));
 }

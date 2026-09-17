@@ -1,66 +1,105 @@
 import { MR2, HEX_VERTICES, cellKey, getTileDef, isWater, tribeAt, levelAt, generateBaseId } from "./shared.js";
 
-// ─── Geometry constants ───────────────────────────────────────────────────────
-// Flat-top hex grid: offset columns (odd columns shift down by half hex height).
-const HW  = MR2.hexWidth;      // 104 — full drawn width
-const HH  = MR2.hexHeight;     // 68  — full drawn height
-const CS  = MR2.hexColStep;    // 78  — horizontal centre-to-centre (HW * 3/4)
-const RS  = MR2.hexRowStep;    // 68  — vertical   centre-to-centre (= HH)
-const CO  = MR2.hexColOffset;  // 34  — odd-column downward shift  (HH / 2)
+// ─── Geometry constants ─────────────────────────────────────────────────────
+// Flat-top hex grid, offset columns (odd columns shift down by half hex height).
+const HW  = MR2.hexWidth;
+const HH  = MR2.hexHeight;
+const CS  = MR2.hexColStep;
+const RS  = MR2.hexRowStep;
+const CO  = MR2.hexColOffset;
 
-const MIN_ZOOM    = 0.008;
-const MAX_ZOOM    = 12;
+const MIN_ZOOM_FLOOR = 0.005; // fallback before the canvas has a real size — see _minZoomForViewport()
+const MAX_ZOOM    = 1; // zoom 1 = a hex at its native drawn size (HW×HH px, ~104×68)
 const ZOOM_STEP   = 1.2;
-const LABEL_ZOOM  = 0.8;
-const LABEL_FULL_ZOOM = 1.4;
-const GRID_ZOOM   = 0.15;  // below this, skip grid lines
+const LABEL_ZOOM  = 0.45;
+const LABEL_FULL_ZOOM = 0.75;
+const GRID_ZOOM   = 0.15;
 
-// Below this zoom hexes are < 8 px wide; fillRect is faster and looks identical.
-const RECT_ZOOM = 0.08;
+const RECT_ZOOM = 0.08; // below this hexes are <8px wide; fillRect looks identical and is faster
 
-// ─── Cell overlay colour palette ─────────────────────────────────────────────
-// Five distinct hue families so colours stay distinguishable even under the
-// COL_DIM_FILL overlay.  Hue families reserved for future states are noted
-// below so expansion doesn't require a full palette rethink.
-//
-//  CYAN    — mine (home + outpost)
-//  YELLOW  — neutral other players' home bases
-//  ORANGE  — neutral other players' outposts
-//  GRAY    — wild monster tribes
-//  MAGENTA — filter match highlight
-//
-//  Reserved for future relationship colours:
-//    GREEN  — alliance members (home + outpost)
-//    PURPLE — truced players   (home + outpost)
+// Past this many visible cells, _render() blits a pre-rendered whole-map
+// texture (_rebuildWorldTexture()) instead of iterating per cell — the fix
+// for drag lag at low zoom. Also used (with a dim/highlight pass on top)
+// when a filter is active — see _getFilterMatchPositions().
+const TEXTURE_CELL_THRESHOLD = 120_000;
 
+// ─── Cell overlay colours ───────────────────────────────────────────────────
 const COL_MINE              = "#00e8ff";
-const COL_MINE_HOME_FILL    = "rgba(0,232,255,0.88)";    // mine  — home   — vivid cyan
-const COL_MINE_OUT_FILL     = "rgba(0,170,230,0.50)";    // mine  — post   — softer blue-cyan
-const COL_OTHER_HOME_FILL   = "rgba(255,210,30,0.90)";   // other — home   — golden yellow
-const COL_OTHER_OUT_FILL    = "rgba(255,130,0,0.55)";    // other — post   — orange
-const COL_WM_FILL           = "rgba(200,200,200,0.35)";  // wild tribe     — light gray tint
+const COL_MINE_HOME_FILL    = "rgba(0,232,255,0.88)";
+const COL_MINE_OUT_FILL     = "rgba(0,170,230,0.50)";
+const COL_OTHER_HOME_FILL   = "rgba(255,210,30,0.90)";
+const COL_OTHER_OUT_FILL    = "rgba(255,130,0,0.55)";
+const COL_WM_FILL           = "rgba(200,200,200,0.35)";
 
-// Future: alliance home/outpost → green; truce home/outpost → purple
-// const COL_ALLY_HOME_FILL  = "rgba(40,210,100,0.88)";
-// const COL_ALLY_OUT_FILL   = "rgba(40,180,80,0.50)";
-// const COL_TRUCE_HOME_FILL = "rgba(180,80,255,0.82)";
-// const COL_TRUCE_OUT_FILL  = "rgba(160,60,220,0.48)";
+// Reserved for future relationship colours: alliance (green), truce (purple).
 
 const COL_HOVER_FILL  = "rgba(255,255,255,0.20)";
 const COL_SELECTED_ST = "rgba(255,210,0,0.92)";
 const COL_SELECTED_FL = "rgba(255,210,0,0.30)";
-// Filter highlight — magenta; distinct from all current and planned hue families
 const COL_FILTER_FILL = "rgba(255,50,200,0.72)";
 const COL_DIM_FILL    = "rgba(0,0,0,0.38)";
 
-// ─── Hex helpers ─────────────────────────────────────────────────────────────
+const COL_ROUTE_LINE    = "#39ff6a";
+const COL_ROUTE_START   = "#ffffff";
+const COL_ROUTE_BLOCKED = "#ff4444";
 
-// Flat-top column-offset grid: odd columns shift down by CO.
+// Numeric RGB(+alpha) equivalents of the above, for _rebuildWorldTexture()'s
+// per-pixel ImageData writes. Kept in sync by hand.
+const RGB_WATER = [15, 28, 96];
+const RGB_LAND  = [40, 32, 26];
+const RGB_MINE_HOME  = [0, 232, 255],  A_MINE_HOME  = 0.88;
+const RGB_MINE_OUT   = [0, 170, 230],  A_MINE_OUT   = 0.50;
+const RGB_OTHER_HOME = [255, 210, 30], A_OTHER_HOME = 0.90;
+const RGB_OTHER_OUT  = [255, 130, 0],  A_OTHER_OUT  = 0.55;
+const RGB_WM_TEX     = [200, 200, 200], A_WM_TEX    = 0.35;
+
+function blendRGB(base, overlay, alpha) {
+  return [
+    base[0] + (overlay[0] - base[0]) * alpha,
+    base[1] + (overlay[1] - base[1]) * alpha,
+    base[2] + (overlay[2] - base[2]) * alpha,
+  ];
+}
+
+// ─── Hex helpers ────────────────────────────────────────────────────────────
+
 function cellToWorld(cx, cy) {
   return {
     x: cx * CS,
     y: cy * RS + (cx % 2 !== 0 ? CO : 0),
   };
+}
+
+/**
+ * Smallest span of `values` on a circular axis of the given period — finds
+ * the largest gap between consecutive sorted values (wrapping) and returns
+ * the span covering everything else, i.e. the tightest bounding range for a
+ * cluster of points that may straddle the wrap seam. Result may extend past
+ * [0, period), e.g. {min: -5, max: 12} — callers (cellToWorld()) only care
+ * about linear position, not staying in-bounds.
+ */
+function minimalCircularSpan(values, period) {
+  const sorted = [...new Set(values)].sort((a, b) => a - b);
+  if (sorted.length <= 1) return { min: sorted[0] ?? 0, max: sorted[0] ?? 0 };
+
+  let maxGap = -Infinity, gapAt = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const next = i + 1 < sorted.length ? sorted[i + 1] : sorted[0] + period;
+    const gap = next - sorted[i];
+    if (gap > maxGap) { maxGap = gap; gapAt = i; }
+  }
+
+  const startIdx = (gapAt + 1) % sorted.length;
+  let prev = sorted[startIdx];
+  const min = prev;
+  let max = prev;
+  for (let k = 1; k < sorted.length; k++) {
+    let v = sorted[(startIdx + k) % sorted.length];
+    if (v < prev) v += period;
+    max = v;
+    prev = v;
+  }
+  return { min, max };
 }
 
 function worldToCell(wx, wy) {
@@ -81,7 +120,6 @@ function worldToCell(wx, wy) {
   return best;
 }
 
-// Single-hex path (used for hover / selected where we need clip or stroke).
 function hexPath(ctx, sx, sy, zoom) {
   ctx.beginPath();
   for (let i = 0; i < HEX_VERTICES.length; i++) {
@@ -92,7 +130,7 @@ function hexPath(ctx, sx, sy, zoom) {
   ctx.closePath();
 }
 
-// ─── MapRenderer ──────────────────────────────────────────────────────────────
+// ─── MapRenderer ────────────────────────────────────────────────────────────
 
 export class MapRenderer {
   constructor(canvas) {
@@ -100,7 +138,11 @@ export class MapRenderer {
     this.ctx    = canvas.getContext("2d");
 
     this.cells   = new Map();
-    this.myUserId = null;  // set by ViewerApp after login — needed to derive `mine`, a per-viewer field the bulk snapshot doesn't carry
+    this._cellsVersion = 0; // bumped whenever cells is bulk-replaced or mutated — invalidates _filterMatchCache
+    this._realLevelByUid = new Map(); // uid -> real level learned from getarea — see normalizeCellLevel()
+    this._worldTexture = null;
+    this._filterMatchCache = null; // { filter, cellsVersion, positions } — see _getFilterMatchPositions()
+    this.myUserId = null;
     this.zoom    = 0.25;
     this.viewX   = (MR2.mapWidth  * CS) / 2 - canvas.clientWidth  / (2 * this.zoom);
     this.viewY   = (MR2.mapHeight * RS + CO) / 2 - canvas.clientHeight / (2 * this.zoom);
@@ -108,6 +150,7 @@ export class MapRenderer {
     this.hoveredCell  = null;
     this.selectedCell = null;
     this.filter       = null;
+    this.route        = null; // set by ViewerApp's Path tool — see setRoute()
 
     this._dragging   = false;
     this._dragStartX = 0;
@@ -123,17 +166,15 @@ export class MapRenderer {
     this.onCellHover      = null;
     this.onCellClick      = null;
     this.onCoordsChange   = null;
-    this.onViewportChanged = null;  // fires ~250ms after any pan/zoom
+    this.onViewportChanged = null; // fires ~250ms after a pan/zoom
 
     this._bindEvents();
     this._scheduleRender();
   }
 
-  // ─── Public API ─────────────────────────────────────────────────────────────
+  // ─── Public API ───────────────────────────────────────────────────────────
 
-  // Ingest a single /worldmapv2/getarea response — used for click-to-enrich
-  // detail (resources, monsters, truce, live lock state) on top of the bulk
-  // world data, since getarea's response is a strict superset for that cell.
+  /** Ingests a /worldmapv2/getarea response for click-to-enrich detail. */
   ingestArea(areaData) {
     for (const [xStr, row] of Object.entries(areaData)) {
       const cx = parseInt(xStr, 10);
@@ -143,14 +184,11 @@ export class MapRenderer {
         this.cells.set(cellKey(cx, cy), Object.assign({}, data, { x: cx, y: cy }));
       }
     }
+    this._cellsVersion++;
     this.markDirty();
   }
 
-  // Builds the entire map from a /worldmapv2/terrain byte blob plus a
-  // /worldmapv2/snapshot payload. Replaces the whole cell set — safe to call
-  // again on every snapshot poll since it starts fresh from the (unchanging)
-  // terrain and layers the new snapshot on top, so a cell that's no longer
-  // occupied (e.g. a regenerated tribe camp) can't linger with stale data.
+  /** Rebuilds the entire map from terrain bytes + a snapshot payload. Safe to call again on every poll. */
   loadWorld(terrainBytes, snapshot) {
     const W = MR2.mapWidth, H = MR2.mapHeight;
     const cells = new Map();
@@ -162,8 +200,7 @@ export class MapRenderer {
           cells.set(cellKey(x, y), { x, y, i });
           continue;
         }
-        // Default: an unattacked wild monster camp. These are never persisted
-        // server-side either — /worldmapv2/getarea computes the same thing.
+        // Unattacked wild monster camp — never persisted server-side either.
         cells.set(cellKey(x, y), {
           x, y, i,
           uid: 0,
@@ -179,7 +216,104 @@ export class MapRenderer {
 
     this.cells = cells;
     this._applySnapshot(snapshot);
+    this._normalizePlayerLevels();
+    this._rebuildWorldTexture();
+    this._recomputeRouteStatus();
+    this._cellsVersion++;
     this.markDirty();
+  }
+
+  // The bulk snapshot has no level for player cells; _applySnapshot() clears
+  // `l` for them. A level is account-wide (calculateBaseLevel() on the
+  // server, not per-cell), so once learned via getarea it applies to every
+  // cell that player owns — re-fills from this._realLevelByUid here.
+  _normalizePlayerLevels() {
+    for (const cell of this.cells.values()) {
+      if (!(cell.uid > 0)) continue;
+      const known = this._realLevelByUid.get(cell.uid);
+      cell.l = known; // undefined shows "?" until getarea has told us otherwise
+    }
+  }
+
+  /** Records a real level from getarea and propagates it to every other loaded cell for that uid. */
+  normalizeCellLevel(cell) {
+    if (!cell || !(cell.uid > 0)) return cell;
+    if (cell.l !== undefined && cell.l !== null) {
+      this._realLevelByUid.set(cell.uid, cell.l);
+      for (const other of this.cells.values()) {
+        if (other.uid === cell.uid && other !== cell) other.l = cell.l;
+      }
+      return cell;
+    }
+    const known = this._realLevelByUid.get(cell.uid);
+    return known === undefined ? cell : { ...cell, l: known };
+  }
+
+  // One-pixel-per-cell rasterization of terrain + ownership colour, built
+  // once per world load and blitted via drawImage() when the visible area
+  // is too large for per-cell rendering — see TEXTURE_CELL_THRESHOLD.
+  _rebuildWorldTexture() {
+    const W = MR2.mapWidth, H = MR2.mapHeight;
+    if (!this._worldTexture) this._worldTexture = document.createElement("canvas");
+    const tex = this._worldTexture;
+    tex.width = W;
+    tex.height = H;
+
+    const tctx = tex.getContext("2d", { willReadFrequently: false });
+    const img = tctx.createImageData(W, H);
+    const data = img.data;
+
+    for (let x = 0; x < W; x++) {
+      for (let y = 0; y < H; y++) {
+        const cell = this.cells.get(cellKey(x, y));
+        const height = cell?.i ?? 0;
+        let rgb = isWater(height) ? RGB_WATER : RGB_LAND;
+
+        if (!isWater(height) && cell && cell.b !== undefined) {
+          const isHome = cell.b === MR2.cellTypes.HOMECELL;
+          if (cell.uid === 0) {
+            rgb = blendRGB(rgb, RGB_WM_TEX, A_WM_TEX);
+          } else if (cell.mine === 1) {
+            rgb = blendRGB(rgb, isHome ? RGB_MINE_HOME : RGB_MINE_OUT, isHome ? A_MINE_HOME : A_MINE_OUT);
+          } else {
+            rgb = blendRGB(rgb, isHome ? RGB_OTHER_HOME : RGB_OTHER_OUT, isHome ? A_OTHER_HOME : A_OTHER_OUT);
+          }
+        }
+
+        const idx = (y * W + x) * 4;
+        data[idx]     = rgb[0];
+        data[idx + 1] = rgb[1];
+        data[idx + 2] = rgb[2];
+        data[idx + 3] = 255;
+      }
+    }
+
+    tctx.putImageData(img, 0, 0);
+  }
+
+  // Blits the pre-rendered texture cropped to the current viewport.
+  _drawWorldTexture() {
+    const { ctx, zoom } = this;
+    const tex = this._worldTexture;
+    if (!tex) return;
+
+    const canvasW = this.canvas.clientWidth, canvasH = this.canvas.clientHeight;
+    const texX0 = this.viewX / CS, texX1 = (this.viewX + canvasW / zoom) / CS;
+    const texY0 = this.viewY / RS, texY1 = (this.viewY + canvasH / zoom) / RS;
+
+    const sx = Math.max(0, Math.min(MR2.mapWidth,  texX0));
+    const sy = Math.max(0, Math.min(MR2.mapHeight, texY0));
+    const sx2 = Math.max(0, Math.min(MR2.mapWidth,  texX1));
+    const sy2 = Math.max(0, Math.min(MR2.mapHeight, texY1));
+    if (sx2 <= sx || sy2 <= sy) return;
+
+    const spanX = texX1 - texX0, spanY = texY1 - texY0;
+    const dx = (sx - texX0) / spanX * canvasW;
+    const dy = (sy - texY0) / spanY * canvasH;
+    const dw = (sx2 - sx) / spanX * canvasW;
+    const dh = (sy2 - sy) / spanY * canvasH;
+
+    ctx.drawImage(tex, sx, sy, sx2 - sx, sy2 - sy, dx, dy, dw, dh);
   }
 
   _applySnapshot(snapshot) {
@@ -193,8 +327,6 @@ export class MapRenderer {
       const key = cellKey(x, y);
       const existing = this.cells.get(key) || { x, y };
 
-      // getarea zeroes damage once a base's protection window has already
-      // expired (see userCell.ts) — replicate that so display matches.
       const protectionExpired = protectedUntil > 0 && protectedUntil <= now;
       const isProtected = protectedUntil > 0 && !protectionExpired;
 
@@ -212,17 +344,12 @@ export class MapRenderer {
       };
 
       if (baseType === MR2.cellTypes.WM) {
-        // Attacked wild camp — n/l keep the tribe/level formula loadWorld()
-        // already set; only damage/destroyed come from the DB row.
         cell.dm = damage;
         cell.d  = destroyed;
       } else {
-        // Player base (home or outpost). mine is relative to the signed-in
-        // viewer — never sent by the snapshot — and d mirrors getarea's own
-        // "damage >= 90%" visual flag rather than the raw destroyed column,
-        // which getarea never surfaces for these base types.
         const owner = players[uid];
         cell.n = owner?.name ?? existing.n;
+        cell.l = undefined; // no real level from the bulk snapshot — see _normalizePlayerLevels()
         cell.pic_square = owner?.avatar ?? undefined;
         cell.im = owner?.avatar ?? undefined;
         cell.mine = uid === this.myUserId ? 1 : 0;
@@ -237,8 +364,11 @@ export class MapRenderer {
 
   clearCells() {
     this.cells.clear();
+    this._realLevelByUid.clear();
+    this._worldTexture = null;
     this.hoveredCell = null;
     this.selectedCell = null;
+    this._cellsVersion++;
     this.markDirty();
   }
 
@@ -248,12 +378,46 @@ export class MapRenderer {
     this.viewY = y + HH / 2 - this.canvas.clientHeight / (2 * this.zoom);
     this._clampView();
     this.markDirty();
-    // Don't fire onViewportChanged here — centering is an intentional jump,
-    // not a user pan, and demand-loading is handled by the caller.
+  }
+
+  /** Zooms/pans so every cell in `cellList` is visible, wraparound-aware. */
+  fitToCells(cellList, { paddingFraction = 0.18 } = {}) {
+    if (!cellList || !cellList.length) return;
+    const canvasW = this.canvas.clientWidth, canvasH = this.canvas.clientHeight;
+    if (!canvasW || !canvasH) return;
+
+    const spanX = minimalCircularSpan(cellList.map((c) => c.x), MR2.mapWidth);
+    const spanY = minimalCircularSpan(cellList.map((c) => c.y), MR2.mapHeight);
+
+    const topLeft     = cellToWorld(spanX.min, spanY.min);
+    const bottomRight = cellToWorld(spanX.max, spanY.max);
+    const boxW = Math.max(HW, bottomRight.x - topLeft.x + HW);
+    const boxH = Math.max(HH, bottomRight.y - topLeft.y + HH);
+    const centerX = (topLeft.x + bottomRight.x) / 2 + HW / 2;
+    const centerY = (topLeft.y + bottomRight.y) / 2 + HH / 2;
+
+    const pad = 1 + paddingFraction * 2;
+    const fitZoom = Math.min(canvasW / (boxW * pad), canvasH / (boxH * pad));
+    const zoom = Math.max(this._minZoomForViewport(), Math.min(MAX_ZOOM, fitZoom));
+
+    this.zoom = zoom;
+    this.viewX = centerX - canvasW  / (2 * zoom);
+    this.viewY = centerY - canvasH / (2 * zoom);
+    this._clampView();
+    this.markDirty();
+  }
+
+  // Minimum zoom that still fits the whole map on the current canvas (0.9x margin).
+  _minZoomForViewport() {
+    const W = this.canvas.clientWidth, H = this.canvas.clientHeight;
+    if (!W || !H) return MIN_ZOOM_FLOOR;
+    const mapW = MR2.mapWidth  * CS + HW / 4;
+    const mapH = MR2.mapHeight * RS + CO;
+    return Math.max(MIN_ZOOM_FLOOR, 0.9 * Math.min(W / mapW, H / mapH));
   }
 
   setZoom(newZoom, pivotSX, pivotSY) {
-    const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
+    const clamped = Math.max(this._minZoomForViewport(), Math.min(MAX_ZOOM, newZoom));
     const wx = pivotSX / this.zoom + this.viewX;
     const wy = pivotSY / this.zoom + this.viewY;
     this.zoom  = clamped;
@@ -281,6 +445,8 @@ export class MapRenderer {
     this.canvas.width  = Math.round(this.canvas.clientWidth  * dpr);
     this.canvas.height = Math.round(this.canvas.clientHeight * dpr);
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const minZoom = this._minZoomForViewport();
+    if (this.zoom < minZoom) this.zoom = minZoom;
     this._clampView();
     this.markDirty();
   }
@@ -308,11 +474,67 @@ export class MapRenderer {
 
   setFilter(filter) { this.filter = filter; this.markDirty(); }
 
+  // ─── Path tool's route overlay ────────────────────────────────────────────
+
+  /** route: findRoute() result. myUid: identity to track progress against. originalOwners: uid per path cell at plan time. */
+  setRoute(route, myUid, originalOwners) {
+    this.route = route ? { ...route, myUid, originalOwners } : null;
+    this._recomputeRouteStatus();
+    this.markDirty();
+  }
+
+  clearRoute() {
+    this.route = null;
+    this.markDirty();
+  }
+
+  getRouteProgress() {
+    if (!this.route) return null;
+    const counts = { completed: 0, blocked: 0, pending: 0, total: this.route.path.length - 1 };
+    for (let i = 1; i < this.route.path.length; i++) {
+      const status = this.route.hopStatus?.[i];
+      if (status === "completed") counts.completed++;
+      else if (status === "blocked") counts.blocked++;
+      else counts.pending++;
+    }
+    return counts;
+  }
+
+  // Derives each hop's pending/completed/blocked status against current ownership.
+  _recomputeRouteStatus() {
+    if (!this.route) return;
+    const { path, myUid, originalOwners } = this.route;
+    const hopStatus = new Array(path.length).fill(undefined);
+    for (let i = 1; i < path.length; i++) {
+      const cell = this.getCellAt(path[i].x, path[i].y);
+      const currentUid  = cell?.uid ?? 0;
+      const originalUid = originalOwners?.[i] ?? 0;
+      if (myUid != null && currentUid === myUid) hopStatus[i] = "completed";
+      else if (currentUid === originalUid) hopStatus[i] = "pending";
+      else hopStatus[i] = "blocked";
+    }
+    this.route.hopStatus = hopStatus;
+  }
+
   countFilterMatches() {
     if (!this._hasActiveFilter()) return 0;
-    let n = 0;
-    for (const cell of this.cells.values()) { if (this._cellMatchesFilter(cell)) n++; }
-    return n;
+    return this._getFilterMatchPositions().length / 2;
+  }
+
+  // Flat [x, y, x, y, ...] world-cell coords of every filter match, cached by (filter,
+  // cellsVersion) so a drag/zoom while zoomed way out doesn't re-scan all 640k cells
+  // every frame — only the texture-blit render path (extreme zoom-out) uses this.
+  _getFilterMatchPositions() {
+    const cache = this._filterMatchCache;
+    if (cache && cache.filter === this.filter && cache.cellsVersion === this._cellsVersion) {
+      return cache.positions;
+    }
+    const positions = [];
+    for (const cell of this.cells.values()) {
+      if (this._cellMatchesFilter(cell)) positions.push(cell.x, cell.y);
+    }
+    this._filterMatchCache = { filter: this.filter, cellsVersion: this._cellsVersion, positions };
+    return positions;
   }
 
   _hasActiveFilter() {
@@ -321,23 +543,18 @@ export class MapRenderer {
     return !!(playerName || filterPlayerUids?.size || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels?.size);
   }
 
+  // AND between active filter groups; OR within each group.
   _cellMatchesFilter(cell) {
     const f = this.filter;
     if (!f) return false;
     const i = cell.i ?? 0;
 
-    // AND logic between active groups — every active group must pass.
-    // Within each group the check is OR (any selected value matches).
-
-    // ── Player filter ────────────────────────────────────────────────────────
-    // Uid-set match when players are pinned; substring fallback for free text.
     if (f.filterPlayerUids?.size) {
       if (!f.filterPlayerUids.has(cell.uid)) return false;
     } else if (f.playerName) {
       if (!(cell.uid > 0 && cell.n && cell.n.toLowerCase().includes(f.playerName))) return false;
     }
 
-    // ── Base type ────────────────────────────────────────────────────────────
     if (f.baseTypes.size) {
       const baseMatch =
         (f.baseTypes.has("main")        && cell.b === MR2.cellTypes.HOMECELL) ||
@@ -346,7 +563,6 @@ export class MapRenderer {
       if (!baseMatch) return false;
     }
 
-    // ── Terrain type ─────────────────────────────────────────────────────────
     if (f.terrainTypes.size) {
       const terrainMatch =
         (f.terrainTypes.has("water") && i <= 99)             ||
@@ -356,9 +572,7 @@ export class MapRenderer {
       if (!terrainMatch) return false;
     }
 
-    // ── Bonus ranges — only meaningful for outposts on land ──────────────────
-    // If either slider is narrowed from its limit it acts as an additional AND
-    // constraint. A non-outpost cell fails this group automatically.
+    // Bonus ranges only meaningful for outposts on land.
     if (f.towerBonusRange || f.resourceBonusRange) {
       if (cell.b !== MR2.cellTypes.OUTPOST || i <= 99) return false;
       const ALT_AVG = 125;
@@ -368,7 +582,6 @@ export class MapRenderer {
       if (f.resourceBonusRange && !(res   >= f.resourceBonusRange.min && res   <= f.resourceBonusRange.max)) return false;
     }
 
-    // ── Flinger level — outposts only ────────────────────────────────────────
     if (f.flingerLevels?.size) {
       if (cell.b !== MR2.cellTypes.OUTPOST) return false;
       const flingerLv = Number(cell.f) || 0;
@@ -378,7 +591,7 @@ export class MapRenderer {
     return true;
   }
 
-  // ─── Rendering ──────────────────────────────────────────────────────────────
+  // ─── Rendering ────────────────────────────────────────────────────────────
 
   _scheduleRender() {
     this._rafId = requestAnimationFrame(() => {
@@ -396,7 +609,6 @@ export class MapRenderer {
     ctx.fillStyle = "#0e1a24";
     ctx.fillRect(0, 0, W, H);
 
-    // Precompute scaled vertex flat array for this zoom [vx*z, vy*z, ...]
     const zv = new Float32Array(12);
     for (let i = 0; i < 6; i++) {
       zv[i * 2]     = HEX_VERTICES[i][0] * zoom;
@@ -404,57 +616,18 @@ export class MapRenderer {
     }
 
     const useRect     = zoom < RECT_ZOOM;
-    const rw          = HW * zoom + 1;  // +1 fills sub-pixel gaps between cells
+    const rw          = HW * zoom + 1; // +1 fills sub-pixel gaps
     const rh          = HH * zoom + 1;
     const filterActive = this._hasActiveFilter();
 
-    // Visible cell range — column-offset grid uses CS (col step) and RS (row step)
     const startCX = Math.max(0, Math.floor(this.viewX / CS) - 2);
     const endCX   = Math.min(MR2.mapWidth  - 1, Math.ceil((this.viewX + W / zoom) / CS) + 2);
     const startCY = Math.max(0, Math.floor(this.viewY / RS) - 1);
     const endCY   = Math.min(MR2.mapHeight - 1, Math.ceil((this.viewY + H / zoom) / RS) + 2);
 
-    // ── Single pass: collect positions into colour-keyed buckets ─────────────
-    const terrain = new Map();
-    const overlay = new Map();
-    const fDim    = [];
-    const fHit    = [];
+    const visibleCellCount = (endCX - startCX + 1) * (endCY - startCY + 1);
+    const useTexture = !!this._worldTexture && visibleCellCount > TEXTURE_CELL_THRESHOLD;
 
-    for (let cx = startCX; cx <= endCX; cx++) {
-      const colOff = cx % 2 !== 0 ? CO : 0;
-      for (let cy = startCY; cy <= endCY; cy++) {
-        const cell = this.cells.get(cellKey(cx, cy));
-        const sx = (cx * CS - this.viewX) * zoom;
-        const sy = (cy * RS + colOff - this.viewY) * zoom;
-
-        // Terrain
-        const fill = getTileDef(cell?.i ?? 0).fill;
-        let tb = terrain.get(fill);
-        if (!tb) { tb = []; terrain.set(fill, tb); }
-        tb.push(sx, sy);
-
-        // Base overlay — tribe cells get a light gray tint; player cells get colour
-        if (cell && cell.b !== undefined && !isWater(cell.i ?? 0)) {
-          const isHome = cell.b === MR2.cellTypes.HOMECELL;
-          const oc = cell.uid === 0
-            ? COL_WM_FILL
-            : cell.mine === 1
-              ? (isHome ? COL_MINE_HOME_FILL : COL_MINE_OUT_FILL)
-              : (isHome ? COL_OTHER_HOME_FILL : COL_OTHER_OUT_FILL);
-          let ob = overlay.get(oc);
-          if (!ob) { ob = []; overlay.set(oc, ob); }
-          ob.push(sx, sy);
-        }
-
-        // Filter
-        if (filterActive && cell) {
-          if (this._cellMatchesFilter(cell)) fHit.push(sx, sy);
-          else fDim.push(sx, sy);
-        }
-      }
-    }
-
-    // ── Batch draw: one fill() per unique colour ──────────────────────────────
     const fillBucket = (color, pos) => {
       if (!pos.length) return;
       ctx.fillStyle = color;
@@ -476,15 +649,129 @@ export class MapRenderer {
       ctx.fill();
     };
 
-    for (const [color, pos] of terrain) fillBucket(color, pos);
-    for (const [color, pos] of overlay) fillBucket(color, pos);
+    if (useTexture) {
+      this._drawWorldTexture();
 
-    if (filterActive) {
-      fillBucket(COL_DIM_FILL,    fDim);
-      fillBucket(COL_FILTER_FILL, fHit);
+      if (filterActive) {
+        // One flat wash dims the whole view instead of per-cell dim fills, then only
+        // matching cells are redrawn on top — the texture path stays cheap either way.
+        ctx.fillStyle = COL_DIM_FILL;
+        ctx.fillRect(0, 0, W, H);
+
+        const matches = this._getFilterMatchPositions();
+        const fHit = [];
+        for (let i = 0; i < matches.length; i += 2) {
+          const cx = matches[i], cy = matches[i + 1];
+          const colOff = cx % 2 !== 0 ? CO : 0;
+          fHit.push((cx * CS - this.viewX) * zoom, (cy * RS + colOff - this.viewY) * zoom);
+        }
+        fillBucket(COL_FILTER_FILL, fHit);
+      }
+    } else {
+      const terrain = new Map();
+      const overlay = new Map();
+      const fDim    = [];
+      const fHit    = [];
+
+      for (let cx = startCX; cx <= endCX; cx++) {
+        const colOff = cx % 2 !== 0 ? CO : 0;
+        for (let cy = startCY; cy <= endCY; cy++) {
+          const cell = this.cells.get(cellKey(cx, cy));
+          const sx = (cx * CS - this.viewX) * zoom;
+          const sy = (cy * RS + colOff - this.viewY) * zoom;
+
+          const fill = getTileDef(cell?.i ?? 0).fill;
+          let tb = terrain.get(fill);
+          if (!tb) { tb = []; terrain.set(fill, tb); }
+          tb.push(sx, sy);
+
+          if (cell && cell.b !== undefined && !isWater(cell.i ?? 0)) {
+            const isHome = cell.b === MR2.cellTypes.HOMECELL;
+            const oc = cell.uid === 0
+              ? COL_WM_FILL
+              : cell.mine === 1
+                ? (isHome ? COL_MINE_HOME_FILL : COL_MINE_OUT_FILL)
+                : (isHome ? COL_OTHER_HOME_FILL : COL_OTHER_OUT_FILL);
+            let ob = overlay.get(oc);
+            if (!ob) { ob = []; overlay.set(oc, ob); }
+            ob.push(sx, sy);
+          }
+
+          if (filterActive && cell) {
+            if (this._cellMatchesFilter(cell)) fHit.push(sx, sy);
+            else fDim.push(sx, sy);
+          }
+        }
+      }
+
+      for (const [color, pos] of terrain) fillBucket(color, pos);
+      for (const [color, pos] of overlay) fillBucket(color, pos);
+
+      if (filterActive) {
+        fillBucket(COL_DIM_FILL,    fDim);
+        fillBucket(COL_FILTER_FILL, fHit);
+      }
     }
 
-    // ── Hover / selected ─────────────────────────────────────────────────────
+    // Path tool's route — a stroked line, not a fill, so the hop cells' own
+    // ownership colour stays visible. Ring = pending, dot = completed, red = blocked.
+    if (this.route && this.route.path.length > 1) {
+      const hwPx = HW * zoom, hhPx = HH * zoom;
+      const centerOf = (cx, cy) => {
+        const { x: wx, y: wy } = cellToWorld(cx, cy);
+        return [(wx - this.viewX) * zoom + hwPx / 2, (wy - this.viewY) * zoom + hhPx / 2];
+      };
+      const pts = this.route.path.map((p) => centerOf(p.x, p.y));
+
+      ctx.save();
+      ctx.strokeStyle = COL_ROUTE_LINE;
+      ctx.lineWidth = Math.max(1.5, hwPx * 0.03);
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      const markerR = Math.max(3, Math.min(9, hwPx * 0.09));
+      const ringWidth = Math.max(1.5, hwPx * 0.025);
+      for (let i = 0; i < pts.length; i++) {
+        const [sx, sy] = pts[i];
+        const isStart = i === 0;
+        const isEnd = i === pts.length - 1;
+        const status = this.route.hopStatus?.[i];
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, markerR, 0, Math.PI * 2);
+        if (isStart) {
+          ctx.fillStyle = COL_ROUTE_START;
+          ctx.fill();
+        } else if (status === "completed") {
+          ctx.fillStyle = COL_ROUTE_LINE;
+          ctx.fill();
+        } else if (status === "blocked") {
+          ctx.strokeStyle = COL_ROUTE_BLOCKED;
+          ctx.lineWidth = ringWidth;
+          ctx.stroke();
+        } else {
+          ctx.strokeStyle = COL_ROUTE_LINE;
+          ctx.lineWidth = ringWidth;
+          ctx.stroke();
+        }
+
+        if (isEnd) {
+          ctx.beginPath();
+          ctx.arc(sx, sy, markerR * 1.8, 0, Math.PI * 2);
+          ctx.strokeStyle = status === "blocked" ? COL_ROUTE_BLOCKED : COL_ROUTE_LINE;
+          ctx.lineWidth = Math.max(1, hwPx * 0.018);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
     if (this.hoveredCell) {
       const { x: cx, y: cy } = this.hoveredCell;
       const { x: wx, y: wy } = cellToWorld(cx, cy);
@@ -506,8 +793,7 @@ export class MapRenderer {
       ctx.stroke();
     }
 
-    // ── Grid lines ───────────────────────────────────────────────────────────
-    if (zoom >= GRID_ZOOM) {
+    if (!useTexture && zoom >= GRID_ZOOM) {
       ctx.strokeStyle = "rgba(0,0,0,0.18)";
       ctx.lineWidth   = 0.5;
       ctx.beginPath();
@@ -528,8 +814,7 @@ export class MapRenderer {
       ctx.stroke();
     }
 
-    // ── Labels ────────────────────────────────────────────────────────────────
-    if (zoom >= LABEL_ZOOM) {
+    if (!useTexture && zoom >= LABEL_ZOOM) {
       ctx.textAlign    = "center";
       ctx.textBaseline = "middle";
       ctx.lineJoin     = "round";
@@ -545,37 +830,31 @@ export class MapRenderer {
           const sy = (cy * RS + colOff - this.viewY) * zoom + hhPx / 2;
           const isHomeLabel = cell.b === MR2.cellTypes.HOMECELL;
 
-          // White text with dark outline — readable on any overlay colour.
-          // Tinted slightly to hint at whose cell it is while keeping contrast.
           const nameColor = cell.uid === 0
-            ? "rgba(255,255,255,0.70)"   // tribe — subtle white
+            ? "rgba(255,255,255,0.70)"
             : cell.mine === 1
-              ? (isHomeLabel ? "#ffffff"  : "#cceeff")  // my home / my outpost
-              : (isHomeLabel ? "#ffffff"  : "#fff0cc");  // other home / other outpost
+              ? (isHomeLabel ? "#ffffff"  : "#cceeff")
+              : (isHomeLabel ? "#ffffff"  : "#fff0cc");
 
           if (zoom >= LABEL_FULL_ZOOM) {
-            // Name
             ctx.font      = `bold ${Math.min(hhPx * 0.22, 12)}px "Trebuchet MS", sans-serif`;
             ctx.lineWidth = 3;
             ctx.strokeStyle = "rgba(0,0,0,0.88)";
             ctx.strokeText(cell.n.substring(0, 12), sx, sy - hhPx * 0.1);
             ctx.fillStyle = nameColor;
             ctx.fillText(cell.n.substring(0, 12),   sx, sy - hhPx * 0.1);
-            // Level
             ctx.font      = `${Math.min(hhPx * 0.18, 10)}px "Trebuchet MS", sans-serif`;
             ctx.lineWidth = 2;
             ctx.strokeText(`Lv ${cell.l ?? "?"}`, sx, sy + hhPx * 0.15);
             ctx.fillStyle = "rgba(255,255,255,0.82)";
             ctx.fillText(`Lv ${cell.l ?? "?"}`,   sx, sy + hhPx * 0.15);
           } else {
-            // Name — shift up slightly to make room for level below
             ctx.font      = `bold ${Math.min(hhPx * 0.22, 11)}px "Trebuchet MS", sans-serif`;
             ctx.lineWidth = 2;
             ctx.strokeStyle = "rgba(0,0,0,0.88)";
             ctx.strokeText(cell.n.substring(0, 8), sx, sy - hhPx * 0.1);
             ctx.fillStyle = nameColor;
             ctx.fillText(cell.n.substring(0, 8),   sx, sy - hhPx * 0.1);
-            // Level
             ctx.font      = `${Math.min(hhPx * 0.18, 9)}px "Trebuchet MS", sans-serif`;
             ctx.strokeText(`Lv ${cell.l ?? "?"}`, sx, sy + hhPx * 0.15);
             ctx.fillStyle = "rgba(255,255,255,0.82)";
@@ -585,8 +864,6 @@ export class MapRenderer {
       }
     }
 
-    // ── Map border ────────────────────────────────────────────────────────────
-    // Total world extent: columns span CS * mapWidth + extra quarter; rows RS * mapHeight + CO for odd-col offset
     ctx.strokeStyle = "rgba(100,160,255,0.40)";
     ctx.lineWidth   = 2;
     ctx.strokeRect(
@@ -597,7 +874,7 @@ export class MapRenderer {
     );
   }
 
-  // ─── Coordinate helpers ──────────────────────────────────────────────────────
+  // ─── Coordinate helpers ───────────────────────────────────────────────────
 
   _screenToCell(sx, sy) {
     return worldToCell(sx / this.zoom + this.viewX, sy / this.zoom + this.viewY);
@@ -612,7 +889,7 @@ export class MapRenderer {
     this.viewY = Math.max(-(H / this.zoom) * m, Math.min(this.viewY, mapH + (H / this.zoom) * m - H / this.zoom));
   }
 
-  // ─── Events ──────────────────────────────────────────────────────────────────
+  // ─── Events ───────────────────────────────────────────────────────────────
 
   _bindEvents() {
     const canvas = this.canvas;

@@ -4,7 +4,7 @@ BYM MR2 Viewer is a browser-based Map Room 2 viewer for Backyard Monsters Refitt
 
 ## Requirements
 
-You must be an active Map Room 2 player. The viewer authenticates as your BYM account and reads data from the world your account currently occupies on Map Room 2. If your account has not joined a Map Room 2 world, the viewer will not be able to load map data.
+None — the viewer shows every Map Room 2 world `poller.py` has polled (five, currently), picked from a dropdown, and works fully with no BYM account at all. Logging in with your own BYM credentials is optional and only ever unlocks click-to-enrich (live resources/monster garrison/truce/lock state) for whichever cell you click — and only while you're viewing your own account's world in the picker.
 
 ## About Map Room 2
 
@@ -21,70 +21,97 @@ Map Room 2 is distinct from Map Room 1 (the original non-hex indoor map room) an
 
 ## Features
 
+The UI is a top bar (brand, world picker, a hideable login) plus a full-bleed map — there's no permanent sidebar; everything else floats and is hidden until you need it.
+
+- **World picker** — pinned in the top bar; every MR2 world `poller.py` has polled, in one dropdown; switch worlds at any time, no login required
 - Full 800×800 hex world map rendered on an interactive canvas
 - Tile sprites from the shared `worldmap/` CDN asset path applied over terrain hexes
 - Progressive map loading with a live progress indicator
-- Defaults to the Stable server — no manual IP entry needed
-- Per-user sign-in with your own BYM credentials
+- Always talks to the Stable game server — there's no server picker; an API key is now required for map data (see How It Works below), so pointing the viewer at a local/custom server isn't a meaningful option anymore
+- Optional sign-in with your own BYM credentials, tucked behind a small trigger button in the top bar — unlocks click-to-enrich (live resources/monsters/truce/lock state) for your own world only. A base's details panel shows a "log in to see this" prompt in its place when it's unavailable.
+- **"View as"** — next to Sign in. A client-only stand-in identity, no login: type a username already visible on the world and the viewer matches it against currently-loaded cells to resolve a uid, entirely in the browser. Drives the "mine" highlight, find-home, and Path route progress exactly like a real login would, but can never unlock click-to-enrich (that still requires a real, matching-world login). Real login always wins over it when both apply.
 - Search for player bases by username
-- Cell inspection — terrain, base type, player, level, damage, and protection status
-- Home base jump button to re-centre on your base
-- Keyboard shortcuts: `+`/`-` to zoom, `H` to jump home, `Escape` to deselect
-- Leaderboard panel for MR2 worlds
+- **Cell details as a floating panel**, not a fixed sidebar — hovering a cell shows a transient preview; clicking one "pins" it open (with a close button) so it stays up while you pan/zoom elsewhere
+- Cell inspection — terrain, base type, player, level, damage, and protection status. The bulk snapshot carries no real per-cell level for player bases at all (only wild camps have one — a real, position-based formula) — a player cell shows `?` for level until you actually check one via click-to-enrich (getarea), which does return a real value, but only for cells belonging to the logged-in account's own world. Once known, that real level is applied to every other currently-loaded cell for that same player too, not just the one you clicked — level is an account-wide stat (`calculateBaseLevel(points, basevalue)`, confirmed directly in the game server — it's computed from the account's own save, nothing per-base), so this is correct, not a guess. An earlier version of this instead defaulted every player cell to the *wild tribe* level formula evaluated at that cell's own coordinates — a real-looking but entirely fabricated number with no relationship to the player at all; that's been removed in favor of `?` until something real is actually known.
+- **Legend** — hidden by default, toggled from a button at the bottom right
+- Home base jump button to re-centre on your base — enabled once an identity (real login or "View as") is known for the viewed world; disabled otherwise rather than a silent no-op
+- **Path tool** (formerly "Track") — bottom-left, hideable, like search/filter. Plans a takeover route between two endpoints — target is a player's **closest outpost** (a home base can never actually be taken over in-game — confirmed directly in the client, which blocks the attack flow outright against a `HOMECELL`, so the tool never offers or routes through one, either as the target or as a stepping stone) or raw coordinates; start is a player or coordinates too, and when it's a player the launch base is picked *automatically* from whichever of their bases (home or any outpost — launching *from* home is fine, it's only ever the target side that's restricted) actually reaches furthest, using that base's real, already-built flinger range: outposts cap at level 4 (range 4), home bases also cap at level 4 on MR2 specifically (range 10) — `getFlingerRange(level, isHome) = isHome ? 2+2*level : level`, but MR2 hard-caps the *effective* home Flinger level at 4 regardless of its cost table's length (MR3 alone can reach level 5/range 12) — confirmed against the game client source. That first hop is free of kit cost — no kit needed, you already have the reach — but still charges takeover cost like any other hop. Every hop after that (once you've taken a fresh cell with no flinger of its own yet) uses `route.js`'s hex-grid A* with a selectable max jump range (Regular/Mega/Ultra), cheapest-kit-per-hop or a fixed tier, wild-tribes-only or allow player takeovers (the explicit target is always reachable regardless — the wild-only restriction only ever applies to the stepping stones in between), and optionally treats high-level Abunakki (35+) as impassable. The cost model accounts for **both** the kit needed to reach each cell *and* the resource cost to take it over — wild camps priced by a linear function of camp level, player-owned cells by a logarithmic function of their `empirevalue`, both halved when the cell is directly hex-adjacent to the *launching player's own real home cell specifically* (not to whichever cell a hop happens to be launched from, and not to any other player's home) — matching the game's own `PopupTakeover` formula exactly. In practice this means the discount essentially only ever has a chance to apply to the very first hop out of home, if that hop happens to land adjacent to it; later hops, further from home, essentially never qualify. Results show kit cost, takeover cost, and a combined grand total. The route draws as a line + per-hop markers on the map (not a solid fill — a hop cell's own colour still shows who currently holds it): hollow ring = pending, filled dot = you've taken it, red ring = someone else's ownership showed up there since you planned it. One route per world is saved in `localStorage` (never sent anywhere) and auto-restored — with progress re-derived against live data — every time you come back to that world.
+- **Activity modal** — icon button in the top bar, next to the world picker. Four tabs, all reading `server.py`'s own routes over `poller.py`'s data:
+  - **Events** — takeovers/wild-claims/recycles, filterable by type and player name, paginated. Events between the same two players of the same type *and* base type (home base vs. outpost — never mixed into one row, since losing your one home base reads very differently from losing some outposts) collapse into one summary row ("Player A took 5 outposts from Player B") with the individual cells listed underneath, each showing its own coordinates and clickable on its own — always visible, no expand/collapse toggle. A single-event row shows its own coordinates and is itself directly clickable. Recycled outposts are the one exception: no per-cell list, since a mass-recycle can be thousands of outposts in one group and would otherwise flood the screen with coordinate pills — just the summary ("Player A recycled 40 outposts"). Grouping is time-bucketed, coarser the older an event is, so a burst collapses together even if it spans more than one poll cycle: under an hour old groups in 10-minute windows, under a day old in hourly windows, older than that in daily windows.
+  - **Activity** — outpost gains *and* losses (not netted — taking 5 and losing 5 shows as +5/-5, not a misleading "0") for every currently-active player, day/week/month, plus their current outpost count. Sortable (click a column header) and filterable by name; no top-N cutoff, "View more" reveals the rest.
+  - **Empire Points** — every player's current total empire value, summed across every cell they own (home base *and* every outpost — not just the main yard), plus its net change over day/week/month. Same sortable/filterable/unlimited table as Activity. A separate leaderboard on purpose: outpost turnover and total account value don't always move together.
+  - **Inactive** — players who haven't *gained* anything (empire value or an outpost) in at least N days. Losing outposts to an attacker doesn't reset this — that's not a sign of the player's own inactivity.
+- **Locate** — icon button in the top bar, next to Activity. Finds which polled world a player's home base is currently on — unlike everything else in the toolbar, this searches *across every world at once*, not just the one on screen, so it's the way to find someone who's relocated or recycled off the world you last had them on. Live suggestions appear as you type (2+ characters, debounced, substring/case-insensitive match on any part of the name — `/api/locate/suggest`), so you can tell at a glance whether someone's on any polled world at all without needing the full exact name; clicking a suggestion switches the World picker to that world and centers on their home base once it's loaded. Backed by `server.py`'s own SQLite-backed routes — no live API calls.
+- Keyboard shortcuts: `+`/`-` to zoom, `H` to jump home, `Escape` to deselect/unpin — all correctly ignored while typing in any text field (an earlier version fired unconditionally, so typing a name containing "h" anywhere in the app, Locate included, would silently recenter the map mid-keystroke)
+- Planning or loading a route auto-zooms/pans to frame the whole thing (wraparound-aware — a route crossing the world seam is framed by how short it visually is, not a naive min/max)
+- Zoom range is now sane at both ends: the max is 1x — a hex at its native drawn size, ~104px wide (was 12x, over 1000px wide) — and the minimum is computed from the actual viewport, so "zoomed all the way out" means the whole map just fits rather than a fixed, needlessly-far value. Past a large-enough visible area, rendering switches to a single pre-rendered whole-map texture instead of iterating every cell — this is what was causing the drag lag at low zoom (hundreds of thousands of cells were being re-rendered on every frame of a pan). This still applies with a map filter active: filter matches are cached and only re-scanned when the filter or the underlying cell data actually changes, not on every frame, so panning while filtered at low zoom stays just as cheap.
 - Session cache via IndexedDB so subsequent visits skip the full reload
 
 ## How It Works
 
-The viewer runs entirely in your browser. After signing in, it connects directly to the selected BYM server for authentication and map data — no credentials or map data pass through any separate backend.
+**The backend has moved server-side.** `/worldmapv2/terrain` and `/worldmapv2/snapshot` now require an API key (`X-API-Key`) rather than a player login, and that key is rate-limited to 10 requests/minute — shared across every visitor, not per-account. A static browser page can't hold that key safely, and couldn't share the rate limit sanely across concurrent visitors anyway, so map data is no longer fetched client-side at all:
 
-Map data is fetched using the `/worldmapv2/getarea` endpoint, which returns cells in 10×10 chunk blocks. The viewer queues all 6,400 chunks (the full 800×800 grid) and fetches them in the background at 4 concurrent requests (the visible viewport loads separately at 8 concurrent), loading from the centre of the map outward so your home area becomes visible quickly. A full background reload of all 6,400 chunks typically takes around 10 minutes.
+- **`poller.py`** runs continuously, polling every MR2 world (via the public, unauthenticated `/api/{v}/worlds`) every `POLL_INTERVAL_SECONDS` (10 minutes by default). It fetches each world's terrain once ever (immutable) and its snapshot each cycle, diffs the new snapshot against the last one, and writes the result into `data/mr2.sqlite3`: the current state of every occupied cell, an append-only feed of `world_events` (takeovers, outposts claimed from wild tribes, recycles, and attacks that didn't change ownership), and a sparse per-player change log used for both a leaderboard-of-growth and an inactivity signal (there's no last-login field from the server, so "hasn't shown up in the change log recently" stands in for it).
 
-## Credentials and Privacy
+**On disk, `cells` (current occupancy) dominates but doesn't grow — it's fully overwritten every poll, bounded by however many cells are actually occupied across every world, not by time. `terrain` is tiny and fetched once per world ever. Only `world_events`/`player_change_log` grow indefinitely, and slowly** (on a real dev DB: ~1,300 events + ~4,900 change-log rows after 22 hours across 5 worlds — well under 1MB combined). The one real gotcha: SQLite doesn't reclaim a table's freed pages on its own, and `cells`' every-10-minutes full delete-and-reinsert churns them hard — the same dev DB had over 100MB (40% of its 256MB file) sitting as reclaimable free space after less than a day. `poller.py` now runs a `VACUUM` once every 24 hours (right after a poll cycle, never mid-cycle) to reclaim that; confirmed on that same DB, it dropped straight back to 142MB with zero data loss.
+- **`server.py`** serves the static viewer files *and* a small read-only JSON API on top of that database (`/api/worlds`, `/api/terrain`, `/api/snapshot`, `/api/leaderboard/activity`, `/api/leaderboard/empire`, `/api/events`, `/api/inactive`, `/api/locate`, `/api/locate/suggest`) — same origin as the static files, so no CORS to configure. The real API key never leaves this process.
 
-Your BYM email and password are sent only to the server you select in the dropdown:
+`/api/worlds`, `/api/terrain`, `/api/snapshot`, `/api/leaderboard/activity`, `/api/leaderboard/empire`, `/api/events`, `/api/inactive`, `/api/locate`, and `/api/locate/suggest` are all wired into the viewer now (world picker + map, the Activity modal covers the middle five, Locate the last two). `/api/events` returns `{groups, next_before_id}` — pre-grouped by poll batch, not raw rows (see the Activity modal bullet above) — and takes `player` (substring match on either side) and `before_id` (cursor pagination; still a raw event id under the hood even though the response is grouped, so paging stays correct regardless of how the next page happens to group) alongside `type`/`limit`. The two `/api/leaderboard/*` routes are intentionally unpaginated — every currently-relevant player, meant to be sorted/filtered client-side, not paged server-side. `/api/locate` (exact name) and `/api/locate/suggest` (substring, for the as-you-type dropdown, takes `term`+`limit`) both, unlike every other route here, aren't scoped to a `world` at all — they search every polled world's current cell state in one query.
 
-- `Stable` (default) — the live Backyard Monsters Refitted server
-- `Local` — your local BYM server at `http://localhost:3001`
-- `Custom` — a custom host and port you enter
+The browser-side viewer's map-loading code (`api-client.js`'s `getTerrain`/`getSnapshot`/`getPolledWorlds`) now calls `server.py`'s relative `/api/terrain`, `/api/snapshot`, and `/api/worlds` — **the page must be served by `server.py`, not `dev_server.py`**, or those calls 404 (`dev_server.py` is a plain static file server with no routes of its own). Login and per-cell detail (`getarea`) are unaffected — those still go straight to the real game server, same as always.
 
-## Running It Locally
+**Viewing a world no longer requires a login at all.** `viewer-app.js` fetches the full list of polled worlds from `/api/worlds` on load, populates a world picker dropdown, and loads whichever one is selected (the last one you picked, or the first in the list on a first visit) — entirely independent of whether anyone is signed in. Logging in with a BYM account only ever does two things now: it resolves which world *that account* is in (via `/base/load`, same as before), and it turns on `canEnrich` — click-to-enrich via `getarea` — for cells in that world specifically. If you're logged in but the picker is showing a different world than your own account's, click-to-enrich stays off until you switch back; the session panel says so. This also means the whole toolbar (search, filters, find-home, refresh) is no longer login-gated — it enables as soon as any world's map data has loaded.
 
-Python 3 is required.
+Per-cell live detail — resources, monster garrison, truce, and online/under-attack lock state — was never part of the bulk data (it's too volatile to cache) and still isn't: that stays on `getarea`, which still takes a player's own Bearer token directly from their browser to the game server, same as before, and remains entirely optional (only needed if you want to see that detail for a clicked cell, and only works for the world your own account is actually in).
 
-From the project root, run:
+## Exporting player data (`/tnb/export/`)
 
-```bash
-python3 dev_server.py
-```
+`/tnb/export/` is the same viewer, plus one extra button that downloads a CSV of every player on **whichever world is currently selected** in the World picker — name, home coordinates, resource stockpiles, outpost count, and an estimated kit breakdown (Regular/Mega/Ultra, inferred from each outpost's flinger level). It fetches that world's snapshot fresh over `/api/snapshot` (server.py's own SQLite-backed route, so no BYM rate limit applies) rather than depending on whatever's already loaded on screen, so the CSV always reflects current data. Nothing is uploaded or sent to this app's own server.
 
-Then open:
+An earlier version of this exported every polled world in one click, but that meant only one of the N files ever actually had resource numbers (see below) while the rest silently didn't — inconsistent rather than useful. One world, always matching what's on screen, is more predictable.
 
-```
-http://localhost:8081
-```
+**Resource numbers need the right login.** `getarea` — the only source of live resource data, since the bulk snapshot deliberately omits it — is scoped *server-side* to whichever world the logged-in account's own save actually belongs to (confirmed directly in the game server: it derives the world from the token, never from anything the client sends). So resource numbers are only ever included when you're logged in **and** the World picker is currently on that same account's own world; a visible warning appears next to the Export button whenever that isn't the case (not logged in at all, or logged in but viewing a different world), and the CSV's resource columns get `N/A (not logged into this world)` instead of blank/zero — so it reads as "not checked" rather than being misread as "this player has zero". Login here stays exactly as client-only as it's always been — credentials go straight to the game server, never to this app's own server.
 
-## Optional Server Settings
+**Architecturally, this is not a second copy of the page.** `/tnb/export/` and `/` serve the exact same `index.html` — `server.py`'s `ViewerHandler.translate_path()` maps `/tnb/export`, `/tnb/export/`, and `/tnb/export/index.html` straight to that one file, byte-for-byte. The export button lives in that shared HTML too, just `hidden` by default. `app.js` (also shared, loaded by both) checks `location.pathname` at runtime: on `/tnb/export/`, it reveals the button, swaps in export-specific `<title>`/brand-suffix/session-status text, adds a `noindex` meta tag, and dynamically `import()`s `tnb/export/export.js` (the only file that's actually export-only — CSV building and the one-world `getarea` backfill) to wire it up. On `/`, none of that runs and the extra markup stays inert. The two pages used to be genuinely separate HTML files that had to be hand-edited in lockstep for every UI change (a real, repeatedly-paid maintenance cost — every feature in this README's Features list above was written into both files); this removed that duplication entirely, down to one shared page plus a couple hundred lines of export-only logic.
 
-| Variable     | Default       | Description                     |
-|--------------|---------------|---------------------------------|
-| `HOST`       | `0.0.0.0`     | Interface to listen on          |
-| `PORT`       | `8081`        | Port to serve on (MR3 uses 8080)|
-| `STATIC_DIR` | `app/static`  | Path to the static file root    |
+## Running It — Backend
 
-Example:
+Requires Python 3 and an API key from the BYM dev (nothing else — no extra dependencies, SQLite and everything else here is stdlib).
 
 ```bash
-PORT=9090 python3 dev_server.py
+cp .env.example .env   # fill in BYM_API_KEY
+python3 poller.py      # keeps data/mr2.sqlite3 up to date; run continuously
+python3 server.py      # serves the site + the JSON API; run continuously
 ```
+
+Then open `http://localhost:8081`. Run both processes together (two terminals, two systemd units, whatever fits your host) — `server.py` only reads the database, `poller.py` is the only thing that writes it or holds the API key.
+
+**Deploying to a real server** (systemd units, an nginx reverse-proxy config, and an optional GitHub Actions deploy-on-push workflow) — see [`deploy/README.md`](deploy/README.md).
+
+### Config (env var, or set in `.env`)
+
+| Variable                | Default                                | Description                                    |
+|--------------------------|-----------------------------------------|-------------------------------------------------|
+| `BYM_API_KEY`            | *(required)*                            | From the BYM dev. Never sent to the browser.    |
+| `BYM_BASE_URL`           | `https://server.bymrefitted.com`        | Game server the poller polls                    |
+| `BYM_API_VERSION`        | `v1.6.2-beta`                           | Used to build the `/worlds` URL                 |
+| `POLL_INTERVAL_SECONDS`  | `600`                                   | How often the poller re-fetches every world     |
+| `HOST`                   | `0.0.0.0`                               | Interface `server.py` listens on                |
+| `PORT`                   | `8081`                                  | Port to serve on (MR3 uses 8080)                |
+| `STATIC_DIR`             | `app/static`                            | Path to the static file root                    |
+
+`dev_server.py` still exists (plain static file server, no `/api/*` routes) but no longer serves a working map on its own now that the browser code expects `server.py` — it's only useful if you're doing frontend-only work against static assets and don't need real map data.
 
 ## Map Legend
+
+The map itself only ever renders two terrain colours — water and land — not a shade per
+height band, so the in-app legend doesn't list Sand/Grass/Rock separately (see the terrain
+table under "About Map Room 2" above for the actual height thresholds, which the Terrain
+filter still uses even though the map's own fill doesn't visually distinguish them):
 
 | Colour       | Meaning                        |
 |--------------|--------------------------------|
 | Dark blue    | Water — impassable             |
-| Sandy brown  | Sand — coastal terrain         |
-| Green shades | Grass — lowland/highland       |
-| Grey / stone | Rock — high-altitude terrain   |
 | Cyan outline | Your base or outpost           |
-| Red-orange   | Enemy player base              |
-| Purple       | Wild monster tribe base        |
+| Red-orange   | Enemy player base               |
+| Purple       | Wild monster tribe base         |

@@ -77,12 +77,7 @@ export class ApiClient {
     });
   }
 
-  // Neither /player/getinfo nor /bm/getnewmap expose the player's worldid, so
-  // this is the only client-callable source of it: the same /base/load call
-  // (type=build, baseid=DEFAULT) the real game client makes on first login.
-  // It also runs the game's own one-time login side effects (Town Hall reward
-  // grants, invasion wave rollover) — see ViewerApp._resolveWorldId() for why
-  // that's expected. Returns the player's full filtered save, worldid included.
+  /** Only client-callable source of worldid — the same /base/load call the real client makes on first login. */
   async getOwnSave(token, userid) {
     return fetchJson(buildBymUrl("/base/load", null, this.config), {
       method: "POST",
@@ -94,11 +89,7 @@ export class ApiClient {
     });
   }
 
-  // On-demand single-cell detail: resources, monsters, truce, and live
-  // lock/online/under-attack state — the per-viewer fields the bulk endpoints
-  // below deliberately leave out. Used for click-to-enrich detail, not bulk
-  // loading. Rate-limited server-side at 120 req/min/user.
-  // Returns { error, x, y, data: { [x]: { [y]: cellData } } }
+  /** Single-cell live detail (resources/monsters/truce/lock state), for click-to-enrich. Returns { error, x, y, data }. */
   async getMapArea(token, x, y) {
     return fetchJson(buildBymUrl("/worldmapv2/getarea", null, this.config), {
       method: "POST",
@@ -110,55 +101,87 @@ export class ApiClient {
     });
   }
 
-  // Bulk terrain height map — 640 000 bytes, one per cell, index x*800+y.
-  // Deterministic and immutable for the life of a world.
-  //
-  // The server's ETag/If-None-Match support (conditional GETs, 304s) isn't
-  // usable from here: If-None-Match isn't on the server's CORS
-  // Access-Control-Allow-Headers list, so the browser blocks the preflight
-  // outright once a cached ETag exists to send — surfacing as a generic
-  // "NetworkError when attempting to fetch resource" with no indication it's
-  // a CORS issue. Always fetching the full body avoids that; the IndexedDB
-  // cache in ViewerApp still gives an instant paint from the last session,
-  // it just can't be cheaply revalidated against the server.
-  // Returns { bytes, etag }.
-  async getTerrain(token, worldid) {
-    return this._getBulk("/worldmapv2/terrain", token, worldid, "arrayBuffer");
-  }
-
-  // Bulk occupancy snapshot — every main yard, outpost, and attacked wild
-  // camp, plus their owners. Rebuilt server-side at most once every 5
-  // minutes. See getTerrain()'s comment for why this always fetches in full
-  // rather than attempting a conditional GET.
-  // Returns { snapshot, etag }.
-  async getSnapshot(token, worldid) {
-    return this._getBulk("/worldmapv2/snapshot", token, worldid, "json");
-  }
-
-  async _getBulk(path, token, worldid, as) {
-    const headers = { Authorization: `Bearer ${token}` };
-    const response = await fetch(buildBymUrl(path, { worldid }, this.config), { method: "GET", headers });
-
-    if (as === "arrayBuffer") {
-      if (!response.ok) {
-        const payload = parseJsonPayload(await response.text());
-        throw new Error(extractErrorMessage(payload) || response.statusText || "Request failed");
-      }
-      const buffer = await response.arrayBuffer();
-      return { bytes: new Uint8Array(buffer), etag: response.headers.get("ETag") };
+  /** Bulk terrain height map (640,000 bytes, index x*800+y), via server.py's own SQLite-backed copy. Returns { bytes }. */
+  async getTerrain(worldid) {
+    const response = await fetch(`/api/terrain?world=${encodeURIComponent(worldid)}`);
+    if (!response.ok) {
+      const payload = parseJsonPayload(await response.text());
+      throw new Error(extractErrorMessage(payload) || response.statusText || "Request failed");
     }
+    const buffer = await response.arrayBuffer();
+    return { bytes: new Uint8Array(buffer) };
+  }
 
+  /** Bulk occupancy snapshot (every home/outpost/attacked wild camp + owners). Returns { snapshot }. */
+  async getSnapshot(worldid) {
+    const response = await fetch(`/api/snapshot?world=${encodeURIComponent(worldid)}`);
     const payload = parseJsonPayload(await response.text());
     if (!response.ok) throw new Error(extractErrorMessage(payload) || response.statusText || "Request failed");
-    return { snapshot: payload, etag: response.headers.get("ETag") };
+    return { snapshot: payload };
   }
 
-  async getWorlds() {
-    return fetchJson(this.buildApiUrl("/worlds"));
+  /** Worlds server.py has polled — drives the world picker. Returns {uuid, name, map_version, player_count, last_polled_at}[]. */
+  async getPolledWorlds() {
+    const response = await fetch("/api/worlds");
+    const payload = parseJsonPayload(await response.text());
+    if (!response.ok) throw new Error(extractErrorMessage(payload) || response.statusText || "Request failed");
+    return Array.isArray(payload) ? payload : [];
   }
 
-  async getLeaderboard(worldId) {
-    return fetchJson(this.buildApiUrl("/leaderboards", { worldid: worldId, mapversion: 2 }));
+  async _getLocalJson(path, params) {
+    const query = new URLSearchParams(params);
+    const response = await fetch(`${path}?${query}`);
+    const payload = parseJsonPayload(await response.text());
+    if (!response.ok) throw new Error(extractErrorMessage(payload) || response.statusText || "Request failed");
+    return Array.isArray(payload) ? payload : [];
+  }
+
+  // Same as _getLocalJson() but for a route whose response is an object, not an array.
+  async _getLocalJsonObject(path, params) {
+    const query = new URLSearchParams(params);
+    const response = await fetch(`${path}?${query}`);
+    const payload = parseJsonPayload(await response.text());
+    if (!response.ok) throw new Error(extractErrorMessage(payload) || response.statusText || "Request failed");
+    return payload && typeof payload === "object" ? payload : {};
+  }
+
+  /**
+   * Grouped world_events — one entry per (poll batch, event_type, old_uid, new_uid), e.g.
+   * "Player A took 5 outposts from Player B" instead of 5 rows.
+   * @returns {{groups: object[], nextBeforeId: number|null}}
+   */
+  async getEvents(worldId, { type, player, beforeId, limit = 20 } = {}) {
+    const params = { world: worldId, limit: String(limit) };
+    if (type) params.type = type;
+    if (player) params.player = player;
+    if (beforeId != null) params.before_id = String(beforeId);
+    const { groups, next_before_id } = await this._getLocalJsonObject("/api/events", params);
+    return { groups: groups || [], nextBeforeId: next_before_id ?? null };
+  }
+
+  /** Every active player's outpost gains/losses (not netted) per day/week/month + current outpost count. Unpaginated. */
+  async getActivityLeaderboard(worldId) {
+    return this._getLocalJson("/api/leaderboard/activity", { world: worldId });
+  }
+
+  /** Every player's current total empire value (home + outposts) + net change per day/week/month. Unpaginated. */
+  async getEmpireLeaderboard(worldId) {
+    return this._getLocalJson("/api/leaderboard/empire", { world: worldId });
+  }
+
+  /** Players whose most recent gain (not any change) predates `days` ago. */
+  async getInactivePlayers(worldId, { days = 7 } = {}) {
+    return this._getLocalJson("/api/inactive", { world: worldId, days: String(days) });
+  }
+
+  /** Exact-match: which polled world(s) `name`'s home base is on right now. */
+  async locatePlayer(name) {
+    return this._getLocalJson("/api/locate", { name });
+  }
+
+  /** As-you-type suggestions — substring match across every world. */
+  async suggestPlayers(term, { limit = 8 } = {}) {
+    return this._getLocalJson("/api/locate/suggest", { term, limit: String(limit) });
   }
 
   buildApiUrl(path, query = null) {
