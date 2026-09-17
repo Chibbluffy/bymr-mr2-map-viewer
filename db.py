@@ -65,7 +65,11 @@ CREATE TABLE IF NOT EXISTS cells (
 );
 CREATE INDEX IF NOT EXISTS idx_cells_world_uid ON cells(world_uuid, uid);
 
--- event_type: TAKEOVER | CLAIMED_FROM_WILD | RECYCLED
+-- event_type: TAKEOVER | CLAIMED_FROM_WILD | RECYCLED | RELOCATED
+-- RELOCATED (a player moving their home base to a former outpost, once/day
+-- server-side) is the only type that uses old_x/old_y: x/y is the new home
+-- location, old_x/old_y is where it moved from. Every other type only ever
+-- has one location, so old_x/old_y stay NULL for them.
 -- batch_id: shared by every event from one poll_once() cycle (set in
 -- poller.py), so list_events_grouped() can collapse a burst into one row.
 CREATE TABLE IF NOT EXISTS world_events (
@@ -82,7 +86,9 @@ CREATE TABLE IF NOT EXISTS world_events (
   old_damage   INTEGER,
   new_damage   INTEGER,
   detected_at  INTEGER NOT NULL,
-  batch_id     INTEGER
+  batch_id     INTEGER,
+  old_x        INTEGER,
+  old_y        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_events_world_time ON world_events(world_uuid, detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_world_type_time ON world_events(world_uuid, event_type, detected_at DESC);
@@ -110,6 +116,8 @@ CREATE INDEX IF NOT EXISTS idx_change_log_world_time ON player_change_log(world_
 # missing (no-op on a fresh DB, which gets it from SCHEMA directly).
 _MIGRATIONS = [
     ("world_events", "batch_id", "ALTER TABLE world_events ADD COLUMN batch_id INTEGER"),
+    ("world_events", "old_x", "ALTER TABLE world_events ADD COLUMN old_x INTEGER"),
+    ("world_events", "old_y", "ALTER TABLE world_events ADD COLUMN old_y INTEGER"),
 ]
 
 
@@ -263,14 +271,16 @@ def replace_cells(conn: sqlite3.Connection, world_uuid: str, cells: list[dict]) 
 def insert_event(conn: sqlite3.Connection, world_uuid: str, x: int, y: int, base_type: int | None,
                   event_type: str, old_uid: int | None, old_name: str | None,
                   new_uid: int | None, new_name: str | None,
-                  old_damage: int | None, new_damage: int | None, batch_id: int | None = None) -> None:
+                  old_damage: int | None, new_damage: int | None, batch_id: int | None = None,
+                  old_x: int | None = None, old_y: int | None = None) -> None:
     conn.execute(
         """
         INSERT INTO world_events (world_uuid, x, y, base_type, event_type, old_uid, old_name,
-                                   new_uid, new_name, old_damage, new_damage, detected_at, batch_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   new_uid, new_name, old_damage, new_damage, detected_at, batch_id, old_x, old_y)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (world_uuid, x, y, base_type, event_type, old_uid, old_name, new_uid, new_name, old_damage, new_damage, now(), batch_id),
+        (world_uuid, x, y, base_type, event_type, old_uid, old_name, new_uid, new_name,
+         old_damage, new_damage, now(), batch_id, old_x, old_y),
     )
 
 
@@ -360,6 +370,7 @@ def list_events_grouped(conn: sqlite3.Connection, world_uuid: str, event_type: s
                 "old_uid": row["old_uid"], "old_name": row["old_name"],
                 "new_uid": row["new_uid"], "new_name": row["new_name"],
                 "base_type": row["base_type"], "detected_at": row["detected_at"],
+                "old_x": row["old_x"], "old_y": row["old_y"],
                 "count": 0, "cells": [],
             }
             groups[key] = g

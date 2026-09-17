@@ -147,6 +147,11 @@ function cellKey(x, y) {
  * @param {number} [options.forceTierRange] bill every hop at this tier's flat cost regardless of distance
  * @param {number} [options.firstHopRange=0] start's already-built flinger range — first hop is free of kit cost (still charges takeover cost)
  * @param {{x,y}} [options.homeCell] player's real home position, for takeoverCost()'s adjacency discount
+ * @param {number} [options.targetRadius=0] if >0, target isn't captured directly (e.g. it's a home base) —
+ *   the route ends on any real, ownable cell within this many hexes of it, priced normally, with a
+ *   free zero-cost final hop appended onto the actual target coordinates for display.
+ * @param {number} [options.exemptUid] this uid's own cells are always valid stepping stones/endpoints,
+ *   even with allowPlayers false — for routing through a target's own outposts to reach their main yard.
  * @param {number} [options.maxNodes=200000] safety valve on A* expansions
  * @returns {{path, hops, totalHops, totalCost, totalTakeoverCost, kitCounts}|null}
  */
@@ -159,6 +164,8 @@ export function findRoute(getCell, start, target, options = {}) {
     forceTierRange = null,
     firstHopRange = 0,
     homeCell = null,
+    targetRadius = 0,
+    exemptUid = null,
     maxNodes = 200000,
   } = options;
 
@@ -172,8 +179,10 @@ export function findRoute(getCell, start, target, options = {}) {
     // Home bases can never be taken over (PopupInfoEnemy.Attack() gates on
     // cell._base != HOMECELL client-side) — applies to target and stepping stones alike.
     if (cell.b === MR2.cellTypes.HOMECELL) return false;
-    // allowPlayers gates stepping stones only; the target is always reachable.
-    if (!asTarget && !allowPlayers && cell.uid > 0) return false;
+    // allowPlayers gates stepping stones only; the target (or exemptUid's own
+    // cells, e.g. routing through a player's outposts to reach their main yard) are always reachable.
+    const exempt = exemptUid != null && cell.uid === exemptUid;
+    if (!asTarget && !allowPlayers && cell.uid > 0 && !exempt) return false;
     if (
       skipHardAbunakki &&
       !asTarget &&
@@ -186,10 +195,14 @@ export function findRoute(getCell, start, target, options = {}) {
     return true;
   };
 
-  if (!isPassable(target.x, target.y, { asTarget: true })) return null;
+  if (targetRadius === 0 && !isPassable(target.x, target.y, { asTarget: true })) return null;
 
   const startKey = cellKey(start.x, start.y);
   const targetKey = cellKey(target.x, target.y);
+  const reachedGoal = (x, y) =>
+    targetRadius > 0
+      ? wrappedHexDistance(x, y, target.x, target.y).distance <= targetRadius
+      : x === target.x && y === target.y;
 
   const cheapestTier = KIT_TIERS[0];
   const cheapestPerHopCost = kitCostTotal(cheapestTier.cost);
@@ -199,7 +212,8 @@ export function findRoute(getCell, start, target, options = {}) {
       : 1;
   const effectiveMaxHop = Math.max(jumpCap, firstHopRange || 0);
   const heuristic = (x, y) => {
-    const d = wrappedHexDistance(x, y, target.x, target.y).distance;
+    const raw = wrappedHexDistance(x, y, target.x, target.y).distance;
+    const d = Math.max(0, raw - targetRadius);
     return costMode === "kitCost"
       ? Math.ceil(d / cheapestTier.range) * (cheapestPerHopCost + TAKEOVER_MIN)
       : Math.ceil(d / effectiveMaxHop);
@@ -213,13 +227,16 @@ export function findRoute(getCell, start, target, options = {}) {
   const visited = new Set();
   let expansions = 0;
   const hasFreeFirstHop = firstHopRange > 0;
+  const finalApproach = targetRadius > 0 ? target : null;
 
   while (!open.isEmpty()) {
     const { key, pos } = open.pop();
     if (visited.has(key)) continue;
     visited.add(key);
 
-    if (key === targetKey) return reconstruct(cameFrom, pos, start, forceTierRange, hasFreeFirstHop, getCell, isAdjacentToHome);
+    if (reachedGoal(pos.x, pos.y)) {
+      return reconstruct(cameFrom, pos, start, forceTierRange, hasFreeFirstHop, getCell, isAdjacentToHome, finalApproach);
+    }
 
     if (++expansions > maxNodes) return null;
 
@@ -230,8 +247,9 @@ export function findRoute(getCell, start, target, options = {}) {
     for (const n of neighborsWithin(pos.x, pos.y, hopRange)) {
       const nKey = cellKey(n.x, n.y);
       if (visited.has(nKey)) continue;
-      if (nKey !== targetKey && !isPassable(n.x, n.y)) continue;
-      if (nKey === targetKey && !isPassable(n.x, n.y, { asTarget: true })) continue;
+      const nIsExactTarget = targetRadius === 0 && nKey === targetKey;
+      if (!nIsExactTarget && !isPassable(n.x, n.y)) continue;
+      if (nIsExactTarget && !isPassable(n.x, n.y, { asTarget: true })) continue;
 
       const distance = hexDistance(pos.x, pos.y, n.x, n.y);
       const kitFree = isStartNode && hasFreeFirstHop;
@@ -251,7 +269,7 @@ export function findRoute(getCell, start, target, options = {}) {
   return null;
 }
 
-function reconstruct(cameFrom, targetPos, start, forceTierRange, firstHopFree, getCell, isAdjacentToHome) {
+function reconstruct(cameFrom, targetPos, start, forceTierRange, firstHopFree, getCell, isAdjacentToHome, finalApproach) {
   const path = [targetPos];
   let key = cellKey(targetPos.x, targetPos.y);
   while (cameFrom.has(key)) {
@@ -292,7 +310,21 @@ function reconstruct(cameFrom, targetPos, start, forceTierRange, firstHopFree, g
     kitCounts[tier.range]++;
     hops.push({ from: a, to: b, distance, kitTier: tier.range, kitName: tier.name, takeoverCost: hopTakeover, adjacentToHome });
   }
-  return { path, hops, totalHops: hops.length, totalCost, totalTakeoverCost, kitCounts };
+  const totalHops = hops.length;
+
+  // A region-goal route (targetRadius > 0) never actually captures the real
+  // target (e.g. a home base) — this last hop is free/uncounted, purely to
+  // draw the route all the way to it and label it as the true destination.
+  if (finalApproach) {
+    const from = path[path.length - 1];
+    hops.push({
+      from, to: finalApproach, distance: hexDistance(from.x, from.y, finalApproach.x, finalApproach.y),
+      kitTier: null, kitName: null, takeoverCost: 0, adjacentToHome: false, isFinalApproach: true,
+    });
+    path.push(finalApproach);
+  }
+
+  return { path, hops, totalHops, totalCost, totalTakeoverCost, kitCounts, hasFinalApproach: !!finalApproach };
 }
 
 // Binary min-heap, keyed by (priority, insertion order) so ties are stable.

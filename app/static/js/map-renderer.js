@@ -273,7 +273,7 @@ export class MapRenderer {
           const isHome = cell.b === MR2.cellTypes.HOMECELL;
           if (cell.uid === 0) {
             rgb = blendRGB(rgb, RGB_WM_TEX, A_WM_TEX);
-          } else if (cell.mine === 1) {
+          } else if (cell.uid === this.myUserId) {
             rgb = blendRGB(rgb, isHome ? RGB_MINE_HOME : RGB_MINE_OUT, isHome ? A_MINE_HOME : A_MINE_OUT);
           } else {
             rgb = blendRGB(rgb, isHome ? RGB_OTHER_HOME : RGB_OTHER_OUT, isHome ? A_OTHER_HOME : A_OTHER_OUT);
@@ -352,7 +352,6 @@ export class MapRenderer {
         cell.l = undefined; // no real level from the bulk snapshot — see _normalizePlayerLevels()
         cell.pic_square = owner?.avatar ?? undefined;
         cell.im = owner?.avatar ?? undefined;
-        cell.mine = uid === this.myUserId ? 1 : 0;
         const displayDamage = protectionExpired ? 0 : damage;
         cell.dm = displayDamage;
         cell.d  = displayDamage >= 90 ? 1 : 0;
@@ -453,7 +452,7 @@ export class MapRenderer {
 
   findHomeCell() {
     for (const cell of this.cells.values()) {
-      if (cell.mine === 1 && cell.b === MR2.cellTypes.HOMECELL) return cell;
+      if (cell.uid === this.myUserId && cell.b === MR2.cellTypes.HOMECELL) return cell;
     }
     return null;
   }
@@ -474,6 +473,15 @@ export class MapRenderer {
 
   setFilter(filter) { this.filter = filter; this.markDirty(); }
 
+  /** Changes which uid renders as "mine" (real login or View As) — rebuilds the low-zoom
+   * texture too, since that's a cached pixel buffer baked from the old identity. */
+  setMyUserId(uid) {
+    if (this.myUserId === uid) return;
+    this.myUserId = uid;
+    if (this._worldTexture) this._rebuildWorldTexture();
+    this.markDirty();
+  }
+
   // ─── Path tool's route overlay ────────────────────────────────────────────
 
   /** route: findRoute() result. myUid: identity to track progress against. originalOwners: uid per path cell at plan time. */
@@ -490,8 +498,11 @@ export class MapRenderer {
 
   getRouteProgress() {
     if (!this.route) return null;
-    const counts = { completed: 0, blocked: 0, pending: 0, total: this.route.path.length - 1 };
-    for (let i = 1; i < this.route.path.length; i++) {
+    // hasFinalApproach's last path entry (e.g. a main yard) is never actually
+    // captured, so it doesn't count as a real hop here — see route.js's reconstruct().
+    const realLength = this.route.hasFinalApproach ? this.route.path.length - 1 : this.route.path.length;
+    const counts = { completed: 0, blocked: 0, pending: 0, total: realLength - 1 };
+    for (let i = 1; i < realLength; i++) {
       const status = this.route.hopStatus?.[i];
       if (status === "completed") counts.completed++;
       else if (status === "blocked") counts.blocked++;
@@ -689,7 +700,7 @@ export class MapRenderer {
             const isHome = cell.b === MR2.cellTypes.HOMECELL;
             const oc = cell.uid === 0
               ? COL_WM_FILL
-              : cell.mine === 1
+              : cell.uid === this.myUserId
                 ? (isHome ? COL_MINE_HOME_FILL : COL_MINE_OUT_FILL)
                 : (isHome ? COL_OTHER_HOME_FILL : COL_OTHER_OUT_FILL);
             let ob = overlay.get(oc);
@@ -832,7 +843,7 @@ export class MapRenderer {
 
           const nameColor = cell.uid === 0
             ? "rgba(255,255,255,0.70)"
-            : cell.mine === 1
+            : cell.uid === this.myUserId
               ? (isHomeLabel ? "#ffffff"  : "#cceeff")
               : (isHomeLabel ? "#ffffff"  : "#fff0cc");
 

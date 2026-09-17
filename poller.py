@@ -102,6 +102,28 @@ def diff_cells(world_uuid: str, old_by_pos: dict, new_cells: list[dict], batch_i
     events = []
     new_by_pos = {(c["x"], c["y"]): c for c in new_cells}
 
+    # A home-base relocation (moving to a former outpost, once/day server-side)
+    # shows up as two separate changes: the old home cell vacates entirely, and
+    # one outpost cell switches to HOMECELL under the same uid. Caught here as
+    # one RELOCATED event before the loops below turn the vacated half into a
+    # misleading RECYCLED and silently ignore the other half (same uid, so it
+    # never hits the ownership-change branch).
+    vacated_homes = {
+        old["uid"]: old
+        for pos, old in old_by_pos.items()
+        if pos not in new_by_pos and old["uid"] > 0 and old["base_type"] == HOMECELL
+    }
+    relocations = {}
+    for pos, new in new_by_pos.items():
+        if new["base_type"] != HOMECELL or new["uid"] <= 0 or new["uid"] not in vacated_homes:
+            continue
+        old = old_by_pos.get(pos)
+        if old and old["uid"] == new["uid"] and old["base_type"] == OUTPOST:
+            relocations[new["uid"]] = (vacated_homes[new["uid"]], new)
+
+    for old_home, new_home in relocations.values():
+        events.append(_relocation_event(world_uuid, old_home, new_home, batch_id))
+
     for pos, new in new_by_pos.items():
         old = old_by_pos.get(pos)
 
@@ -123,9 +145,25 @@ def diff_cells(world_uuid: str, old_by_pos: dict, new_cells: list[dict], batch_i
 
     for pos, old in old_by_pos.items():
         if pos not in new_by_pos and old["uid"] > 0:
+            if old["uid"] in relocations:
+                continue  # already logged as the RELOCATED event's origin
             events.append(_event(world_uuid, old, "RECYCLED", old, None, batch_id))
 
     return events
+
+
+def _relocation_event(world_uuid, old_home, new_home, batch_id) -> dict:
+    return {
+        "world_uuid": world_uuid,
+        "x": new_home["x"], "y": new_home["y"],
+        "old_x": old_home["x"], "old_y": old_home["y"],
+        "base_type": HOMECELL,
+        "event_type": "RELOCATED",
+        "old_uid": old_home["uid"], "old_name": old_home["name"],
+        "new_uid": new_home["uid"], "new_name": new_home["name"] or old_home["name"],
+        "old_damage": None, "new_damage": None,
+        "batch_id": batch_id,
+    }
 
 
 def _event(world_uuid, pos_source, event_type, old, new, batch_id) -> dict:

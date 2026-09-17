@@ -59,8 +59,8 @@ function _fmtNum(n) {
   return String(v);
 }
 
-// Resolves a Path target's cell: closest outpost to the other endpoint (home
-// bases can't be taken over — see route.js's isPassable()). Null if no outposts.
+// Resolves a Path target's cell: closest outpost to the other endpoint. Targeting the
+// player's main yard directly is a different mode entirely — see _resolvePathCells().
 function _pickPathCell(pick, otherPick) {
   if (!pick || !pick.outposts.length) return null;
 
@@ -180,6 +180,8 @@ function _describeEventGroup(g) {
       return n === 1
         ? `${escapeHtml(g.old_name || "A player")}'s ${placeSingular} was recycled`
         : `${escapeHtml(g.old_name || "A player")} recycled ${n} ${place}`;
+    case "RELOCATED":
+      return `${escapeHtml(g.new_name || g.old_name || "A player")} relocated their main yard`;
     default:
       return escapeHtml(g.event_type);
   }
@@ -741,6 +743,15 @@ export class ViewerApp {
       this._updatePathPlanAvailability();
     });
 
+    // Which of the target's outposts to route to — closest to your start (default)
+    // or closest to their own main yard.
+    document.querySelectorAll('input[name="path-target-outpost-ref"]')
+      .forEach((el) => el.addEventListener("change", () => {
+        this._updatePathDistanceReadout();
+        this._updatePathStartLaunchInfo();
+        this._updatePathPlanAvailability();
+      }));
+
     // Player vs. coordinates — independent per side, so e.g. a start pinned
     // by username can target an arbitrary point, or vice versa.
     document.querySelectorAll('input[name="path-start-mode"]')
@@ -806,9 +817,18 @@ export class ViewerApp {
     return { x, y };
   }
 
+  // Their main yard can never actually be captured, but it's still the real
+  // destination when picked — see _planRoute()'s targetRadius/exemptUid options.
+  _pathTargetIsMainYard() {
+    const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
+    const ref = document.querySelector('input[name="path-target-outpost-ref"]:checked')?.value || "start";
+    return targetMode === "player" && ref === "home";
+  }
+
   // Each side is independently "player" or "coordinates". Target resolves
-  // first (closest outpost to start — see _pickPathCell()); start resolves
-  // second via _pickBestLaunchCell() now that target is known.
+  // first (closest outpost to start, or their main yard directly — see
+  // _pickPathCell()/_pathTargetIsMainYard()); start resolves second via
+  // _pickBestLaunchCell() now that target is known.
   _resolvePathCells() {
     const startMode  = document.querySelector('input[name="path-start-mode"]:checked')?.value  || "player";
     const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
@@ -817,9 +837,12 @@ export class ViewerApp {
     const targetCoords = targetMode === "coords" ? this._readPathCoords("target") : null;
 
     const startRefForTarget = startMode === "coords" ? { home: startCoords, outposts: [] } : this._pathStartPick;
+    const mainYardTarget = this._pathTargetIsMainYard();
     const targetCell = targetMode === "coords"
       ? targetCoords
-      : _pickPathCell(this._pathTargetPick, startRefForTarget);
+      : mainYardTarget
+        ? (this._pathTargetPick?.home ?? null)
+        : _pickPathCell(this._pathTargetPick, startRefForTarget);
 
     const startCell = startMode === "coords"
       ? startCoords
@@ -827,7 +850,7 @@ export class ViewerApp {
 
     const startRange = startMode === "player" ? _flingerRangeOf(startCell) : 0;
 
-    return { startCell, targetCell, startRange };
+    return { startCell, targetCell, startRange, mainYardTarget };
   }
 
   _updatePathModeVisibility(side) {
@@ -844,10 +867,15 @@ export class ViewerApp {
   _updatePathDistanceReadout() {
     const el = this.elements.pathDistanceReadout;
     if (!el) return;
-    const { startCell, targetCell } = this._resolvePathCells();
+    const { startCell, targetCell, mainYardTarget } = this._resolvePathCells();
     const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
-    if (targetMode === "player" && this._pathTargetPick && !this._pathTargetPick.outposts.length) {
+    if (targetMode === "player" && this._pathTargetPick && !mainYardTarget && !this._pathTargetPick.outposts.length) {
       el.textContent = `${escapeHtml(this._pathTargetPick.name)} has no outposts loaded — their home base can't be taken over, so there's no valid target here.`;
+      el.hidden = false;
+      return;
+    }
+    if (targetMode === "player" && this._pathTargetPick && mainYardTarget && !this._pathTargetPick.home) {
+      el.textContent = `${escapeHtml(this._pathTargetPick.name)}'s home base isn't loaded on this world.`;
       el.hidden = false;
       return;
     }
@@ -894,13 +922,15 @@ export class ViewerApp {
 
   _planRoute() {
     if (!this.renderer) return;
-    const { startCell, targetCell, startRange } = this._resolvePathCells();
+    const { startCell, targetCell, startRange, mainYardTarget } = this._resolvePathCells();
     if (!startCell || !targetCell) {
       const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
       this._setPathStatus(
-        targetMode === "player" && this._pathTargetPick && !this._pathTargetPick.outposts.length
-          ? `${this._pathTargetPick.name} has no outposts loaded — their home base can't be taken over, so there's no valid target.`
-          : "Pick both a start and a target first.",
+        targetMode === "player" && this._pathTargetPick && mainYardTarget && !this._pathTargetPick.home
+          ? `${this._pathTargetPick.name}'s home base isn't loaded on this world.`
+          : targetMode === "player" && this._pathTargetPick && !mainYardTarget && !this._pathTargetPick.outposts.length
+            ? `${this._pathTargetPick.name} has no outposts loaded — their home base can't be taken over, so there's no valid target.`
+            : "Pick both a start and a target first.",
       );
       return;
     }
@@ -920,6 +950,12 @@ export class ViewerApp {
       forceTierRange: alwaysTier ? jumpCap : null,
       firstHopRange: startRange,
       homeCell: this._pathStartPick?.home ?? null,
+      // Their main yard is never actually captured — route ends on any real
+      // cell within jump range of it, and their own outposts are always valid
+      // stepping stones there even in wild-only mode (otherwise a home ringed
+      // by its owner's own outposts would have no legal path in at all).
+      targetRadius: mainYardTarget ? jumpCap : 0,
+      exemptUid: mainYardTarget ? this._pathTargetPick?.uid ?? null : null,
     };
 
     const getCell = (x, y) => this.renderer.getCellAt(x, y);
@@ -1188,11 +1224,14 @@ export class ViewerApp {
       this._eventsExhausted = false;
     }
 
-    const checkedTypes = [...document.querySelectorAll('#activity-events-type-options input[type=checkbox]:checked')]
-      .map((cb) => cb.value);
-    // 2 checked types fetches unfiltered and narrows client-side.
+    const typeCheckboxes = [...document.querySelectorAll('#activity-events-type-options input[type=checkbox]')];
+    const checkedTypes = typeCheckboxes.filter((cb) => cb.checked).map((cb) => cb.value);
+    // None or all checked means no filter. Exactly one lets the server filter directly.
+    // Anywhere in between (2+ but not all) fetches unfiltered and narrows client-side,
+    // since the API only takes a single `type` param.
+    const noFilter = checkedTypes.length === 0 || checkedTypes.length === typeCheckboxes.length;
     const singleType = checkedTypes.length === 1 ? checkedTypes[0] : null;
-    const clientFilterTypes = checkedTypes.length === 2 ? new Set(checkedTypes) : null;
+    const clientFilterTypes = !noFilter && checkedTypes.length > 1 ? new Set(checkedTypes) : null;
     const player = this.elements.activityEventsPlayerInput?.value?.trim() || "";
 
     this._setActivityStatus("activityEventsStatus", "Loading…");
@@ -1235,9 +1274,9 @@ export class ViewerApp {
       const row = document.createElement(clickable ? "button" : "div");
       if (clickable) row.type = "button";
       row.className = "activity-list-item" + (clickable ? " activity-list-item--clickable" : "");
-      const coordsMeta = clickable
-        ? `<div class="activity-list-item-meta">(${g.cells[0].x}, ${g.cells[0].y})</div>`
-        : "";
+      const coordsMeta = !clickable ? "" : g.event_type === "RELOCATED"
+        ? `<div class="activity-list-item-meta">(${g.old_x}, ${g.old_y}) → (${g.cells[0].x}, ${g.cells[0].y})</div>`
+        : `<div class="activity-list-item-meta">(${g.cells[0].x}, ${g.cells[0].y})</div>`;
       row.innerHTML = `
         <div class="activity-list-item-main">
           <div class="activity-list-item-desc">${_describeEventGroup(g)}</div>
@@ -1752,10 +1791,7 @@ export class ViewerApp {
   _updateEnrichAvailability() {
     this.canEnrich = !!(this.session?.map?.worldid && this.session.map.worldid === this.selectedWorldId);
     const myUid = this._effectiveMyUid();
-    if (this.renderer) {
-      this.renderer.myUserId = myUid;
-      this.renderer.markDirty();
-    }
+    this.renderer?.setMyUserId(myUid);
     this._updateFindHomeAvailability();
     this._updateViewAsUI();
     if (this.currentRoute) this.renderer?.setRoute(this.currentRoute.route, myUid, this.currentRoute.originalOwners);
