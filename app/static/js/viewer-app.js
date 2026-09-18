@@ -19,7 +19,7 @@ import {
   sessionCacheSet,
   setViewerConfig,
 } from "./shared.js";
-import { findRoute, wrappedHexDistance } from "./route.js";
+import { findRoute, wrappedHexDistance, BALANCED_HOP_PENALTY } from "./route.js";
 
 // MR3 sibling viewer, linked when a logged-in account's world isn't a polled MR2 world.
 const OTHER_VIEWER_URL = "https://bymr-maproom3-viewer.chibbluffy.fyi/";
@@ -319,6 +319,7 @@ export class ViewerApp {
       pathStartInput:       document.getElementById("path-start-input"),
       pathStartResults:     document.getElementById("path-start-results"),
       pathStartLaunchInfo:  document.getElementById("path-start-launch-info"),
+      pathTargetInfo:       document.getElementById("path-target-info"),
       pathStartUseMine:     document.getElementById("path-start-use-mine"),
       pathTargetPlayerFields: document.getElementById("path-target-player-fields"),
       pathTargetCoordsFields: document.getElementById("path-target-coords-fields"),
@@ -327,10 +328,10 @@ export class ViewerApp {
       pathTargetInput:      document.getElementById("path-target-input"),
       pathTargetResults:    document.getElementById("path-target-results"),
       pathDistanceReadout:  document.getElementById("path-distance-readout"),
-      pathAlwaysTier:          document.getElementById("path-always-tier"),
       pathSkipHardAbunakki:    document.getElementById("path-skip-hard-abunakki"),
       pathPlanButton:          document.getElementById("path-plan-button"),
       pathResults:       document.getElementById("path-results"),
+      pathResultRoute:   document.getElementById("path-result-route"),
       pathResultHops:    document.getElementById("path-result-hops"),
       pathResultCost:    document.getElementById("path-result-cost"),
       pathResultTakeover: document.getElementById("path-result-takeover"),
@@ -593,10 +594,13 @@ export class ViewerApp {
 
   // ─── Username autocomplete (shared by View As and Path start/target) ───────
 
-  _setupNameAutocomplete(input, resultsEl, onPick) {
+  // onClear (optional) fires on every keystroke, before re-searching — so an already-resolved
+  // pick doesn't silently keep pointing at whatever name used to be typed once the text changes.
+  _setupNameAutocomplete(input, resultsEl, onPick, onClear) {
     if (!input || !resultsEl) return;
 
     input.addEventListener("input", () => {
+      onClear?.();
       const query = input.value.trim().toLowerCase();
       if (!query) { resultsEl.hidden = true; return; }
 
@@ -627,6 +631,14 @@ export class ViewerApp {
     });
 
     input.addEventListener("blur", () => {
+      // Typing the exact name and tabbing/tapping away without ever clicking a suggestion
+      // should still resolve it — otherwise the field visibly has the right name in it, but
+      // nothing downstream (e.g. Plan Route staying disabled) explains why it doesn't count.
+      const query = input.value.trim().toLowerCase();
+      if (query) {
+        const exact = this.searchEntries.find((c) => c.n && c.n.toLowerCase() === query);
+        if (exact) onPick(exact);
+      }
       setTimeout(() => { resultsEl.hidden = true; }, 150);
     });
   }
@@ -647,6 +659,10 @@ export class ViewerApp {
 
     this._setupNameAutocomplete(viewAsInput, viewAsResults, (entry) => {
       this._setViewAs(entry.uid, entry.n);
+    }, () => {
+      this._viewAs = null;
+      this._updateEnrichAvailability();
+      this._updateViewAsUI();
     });
 
     viewAsClearButton?.addEventListener("click", () => this._clearViewAs());
@@ -761,19 +777,32 @@ export class ViewerApp {
       }
     }, true);
 
+    const clearPathStart = () => {
+      this._pathStartPick = null;
+      this._updatePathDistanceReadout();
+      this._updatePathStartLaunchInfo();
+      this._updatePathPlanAvailability();
+    };
+    const clearPathTarget = () => {
+      this._pathTargetPick = null;
+      this._updatePathDistanceReadout();
+      this._updatePathStartLaunchInfo();
+      this._updatePathPlanAvailability();
+    };
+
     this._setupNameAutocomplete(pathStartInput, pathStartResults, (entry) => {
       this._pathStartPick = this._findPlayerByName(entry.n);
       this._updatePathDistanceReadout();
       this._updatePathStartLaunchInfo();
       this._updatePathPlanAvailability();
-    });
+    }, clearPathStart);
 
     this._setupNameAutocomplete(pathTargetInput, pathTargetResults, (entry) => {
       this._pathTargetPick = this._findPlayerByName(entry.n);
       this._updatePathDistanceReadout();
       this._updatePathStartLaunchInfo(); // start's auto-pick depends on target too
       this._updatePathPlanAvailability();
-    });
+    }, clearPathTarget);
 
     // Which of the target's outposts to route to — closest to your start (default)
     // or closest to their own main yard.
@@ -917,7 +946,30 @@ export class ViewerApp {
     el.hidden = false;
   }
 
+  _updatePathTargetInfo() {
+    const el = this.elements.pathTargetInfo;
+    if (!el) return;
+
+    const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
+    if (targetMode !== "player" || !this._pathTargetPick) { el.hidden = true; return; }
+
+    const { targetCell, mainYardTarget } = this._resolvePathCells();
+    if (!targetCell) {
+      el.textContent = mainYardTarget
+        ? `${escapeHtml(this._pathTargetPick.name)}'s home base isn't loaded on this world.`
+        : `${escapeHtml(this._pathTargetPick.name)} has no outposts loaded — their home base can't be taken over, so there's no valid target.`;
+      el.hidden = false;
+      return;
+    }
+
+    el.textContent = mainYardTarget
+      ? `Targeting ${escapeHtml(this._pathTargetPick.name)}'s main yard at (${targetCell.x}, ${targetCell.y}) — never actually captured, the route just ends once you're in range.`
+      : `Targeting ${escapeHtml(this._pathTargetPick.name)}'s outpost at (${targetCell.x}, ${targetCell.y}).`;
+    el.hidden = false;
+  }
+
   _updatePathStartLaunchInfo() {
+    this._updatePathTargetInfo();
     const el = this.elements.pathStartLaunchInfo;
     if (!el) return;
 
@@ -945,32 +997,45 @@ export class ViewerApp {
     el.hidden = false;
   }
 
+  // Why Plan Route is currently disabled — surfaced live (see _updatePathPlanAvailability()),
+  // not just as an error after clicking, since a disabled button never receives that click at all.
+  _pathMissingEndpointReason(startCell, targetCell, mainYardTarget) {
+    const startMode  = document.querySelector('input[name="path-start-mode"]:checked')?.value  || "player";
+    const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
+
+    if (!startCell && startMode === "player") {
+      if (this._pathStartPick) return `${this._pathStartPick.name} has no loaded base to launch from.`;
+      if (this.elements.pathStartInput?.value?.trim()) return "That start player wasn't found on this world — pick a suggestion from the dropdown.";
+    }
+    if (!targetCell && targetMode === "player") {
+      if (this._pathTargetPick && mainYardTarget && !this._pathTargetPick.home) return `${this._pathTargetPick.name}'s home base isn't loaded on this world.`;
+      if (this._pathTargetPick && !mainYardTarget && !this._pathTargetPick.outposts.length) return `${this._pathTargetPick.name} has no outposts loaded — their home base can't be taken over, so there's no valid target.`;
+      if (this.elements.pathTargetInput?.value?.trim()) return "That target player wasn't found on this world — pick a suggestion from the dropdown.";
+    }
+    return "Pick both a start and a target first.";
+  }
+
   _updatePathPlanAvailability() {
     const btn = this.elements.pathPlanButton;
     if (!btn) return;
-    const { startCell, targetCell } = this._resolvePathCells();
-    btn.disabled = !(startCell && targetCell);
+    const { startCell, targetCell, mainYardTarget } = this._resolvePathCells();
+    const ready = !!(startCell && targetCell);
+    btn.disabled = !ready;
+    this._setPathStatus(ready ? "" : this._pathMissingEndpointReason(startCell, targetCell, mainYardTarget));
   }
 
   _planRoute() {
     if (!this.renderer) return;
     const { startCell, targetCell, startRange, mainYardTarget } = this._resolvePathCells();
     if (!startCell || !targetCell) {
-      const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
-      this._setPathStatus(
-        targetMode === "player" && this._pathTargetPick && mainYardTarget && !this._pathTargetPick.home
-          ? `${this._pathTargetPick.name}'s home base isn't loaded on this world.`
-          : targetMode === "player" && this._pathTargetPick && !mainYardTarget && !this._pathTargetPick.outposts.length
-            ? `${this._pathTargetPick.name} has no outposts loaded — their home base can't be taken over, so there's no valid target.`
-            : "Pick both a start and a target first.",
-      );
+      this._setPathStatus(this._pathMissingEndpointReason(startCell, targetCell, mainYardTarget));
       return;
     }
 
     const jumpCap         = Number(document.querySelector('input[name="path-jumpcap"]:checked')?.value) || 4;
     const allowPlayers     = document.querySelector('input[name="path-mode"]:checked')?.value === "players";
     const skipHardAbunakki = !!this.elements.pathSkipHardAbunakki?.checked;
-    const alwaysTier       = !!this.elements.pathAlwaysTier?.checked;
+    const routeMode        = document.querySelector('input[name="path-route-mode"]:checked')?.value || "balanced";
 
     this._setPathStatus("Planning…");
 
@@ -978,8 +1043,12 @@ export class ViewerApp {
       jumpCap,
       allowPlayers,
       skipHardAbunakki,
-      costMode: alwaysTier ? "hops" : "kitCost",
-      forceTierRange: alwaysTier ? jumpCap : null,
+      // Cheapest: pure resource-cost minimization. Balanced: same, but a fixed cost per hop
+      // (independent of kit price) discourages a long chain of hops just to avoid a bigger
+      // kit. Fastest: fewest hops outright, always at the configured max tier — cost-blind.
+      costMode: routeMode === "fastest" ? "hops" : "kitCost",
+      hopPenalty: routeMode === "balanced" ? BALANCED_HOP_PENALTY : 0,
+      forceTierRange: routeMode === "fastest" ? jumpCap : null,
       firstHopRange: startRange,
       homeCell: this._pathStartPick?.home ?? null,
       // Their main yard is never actually captured — route ends on any real
@@ -1034,7 +1103,7 @@ export class ViewerApp {
 
   _renderPathResults() {
     const {
-      pathResults, pathResultHops, pathResultCost, pathResultTakeover, pathResultTotal,
+      pathResults, pathResultRoute, pathResultHops, pathResultCost, pathResultTakeover, pathResultTotal,
       pathResultKits, pathProgressReadout,
     } = this.elements;
     if (!pathResults) return;
@@ -1042,6 +1111,16 @@ export class ViewerApp {
     const r = this.currentRoute;
     if (!r) { pathResults.hidden = true; return; }
     pathResults.hidden = false;
+
+    if (pathResultRoute) {
+      const path = r.route.path;
+      const start = path[0];
+      const target = path[path.length - 1];
+      // startName/targetName are a player's name when picked that way, or already just
+      // "(x, y)" when picked by raw coordinates — don't print the coordinates twice.
+      const label = (name, cell) => name && name !== `(${cell.x}, ${cell.y})` ? `${name} (${cell.x}, ${cell.y})` : `(${cell.x}, ${cell.y})`;
+      pathResultRoute.textContent = `${label(r.startName, start)} → ${label(r.targetName, target)}`;
+    }
 
     if (pathResultHops) pathResultHops.textContent = String(r.route.totalHops);
 

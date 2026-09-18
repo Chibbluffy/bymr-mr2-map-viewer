@@ -388,6 +388,7 @@
                     <label class="filter-option"><input type="radio" name="path-target-outpost-ref" value="start" checked> Closest outpost</label>
                     <label class="filter-option"><input type="radio" name="path-target-outpost-ref" value="home"> Their main yard</label>
                   </div>
+                  <p id="path-target-info" class="path-distance-readout muted" hidden></p>
                   </div>
 
                   <div id="path-target-coords-fields" class="path-coords-fields" hidden>
@@ -405,10 +406,25 @@
                     <label class="filter-option"><input type="radio" name="path-jumpcap" value="3"> Mega (3)</label>
                     <label class="filter-option"><input type="radio" name="path-jumpcap" value="4" checked> Ultra (4)</label>
                   </div>
-                  <label class="filter-option">
-                    <input type="checkbox" id="path-always-tier">
-                    Always use this tier for every hop (instead of cheapest per hop)
-                  </label>
+                  <p class="path-jumpcap-hint muted">The max kit any single hop is allowed to use.</p>
+                </div>
+
+                <div class="filter-section">
+                  <p class="filter-section-title">Route Strategy</p>
+                  <div class="path-route-mode-options">
+                    <div class="path-route-mode-option">
+                      <label class="filter-option"><input type="radio" name="path-route-mode" value="cheapest"> Cheapest</label>
+                      <p class="path-route-mode-hint muted">Lowest total resource cost, whatever that takes — usually the most hops.</p>
+                    </div>
+                    <div class="path-route-mode-option">
+                      <label class="filter-option"><input type="radio" name="path-route-mode" value="balanced" checked> Balanced</label>
+                      <p class="path-route-mode-hint muted">Prefers small kits, but reaches for a bigger one when that means meaningfully fewer hops — e.g. crossing water or a cluster of outposts in one jump instead of routing around it.</p>
+                    </div>
+                    <div class="path-route-mode-option">
+                      <label class="filter-option"><input type="radio" name="path-route-mode" value="fastest"> Fastest</label>
+                      <p class="path-route-mode-hint muted">Fewest hops possible — always uses the jump range above, whatever it costs.</p>
+                    </div>
+                  </div>
                 </div>
 
                 <div class="filter-section">
@@ -426,6 +442,7 @@
                 <button id="path-plan-button" class="primary-button" type="button" disabled>Plan Route</button>
 
                 <div id="path-results" class="path-results" hidden>
+                  <div class="detail-row"><span>Route</span><span id="path-result-route">—</span></div>
                   <div class="detail-row"><span>Hops</span><span id="path-result-hops">—</span></div>
                   <div class="detail-row"><span>Kit cost (est.)</span><span id="path-result-cost">—</span></div>
                   <div class="detail-row"><span>Takeover cost (est.)</span><span id="path-result-takeover">—</span></div>

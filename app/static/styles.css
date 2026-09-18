@@ -791,6 +791,12 @@ button { cursor: pointer; }
   margin: 0;
 }
 
+.path-jumpcap-hint { font-size: 0.72rem; margin: 4px 0 0; }
+
+.path-route-mode-options { display: flex; flex-direction: column; gap: 8px; }
+.path-route-mode-option .filter-option { margin-bottom: 2px; }
+.path-route-mode-hint { font-size: 0.72rem; line-height: 1.35; margin: 0 0 0 22px; }
+
 /* ── Multi-player chip input ──────────────────────────────────────────────── */
 
 .filter-player-tags-area {

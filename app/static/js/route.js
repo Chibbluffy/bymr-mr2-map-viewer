@@ -16,6 +16,13 @@ export const KIT_TIERS = [
   { range: 4, name: "Ultra",   cost: { twigs: 200_000_000, pebbles: 200_000_000, putty: 100_000_000 } },
 ];
 
+// findRoute()'s "Balanced" hopPenalty — about 2/3 of a Regular kit's cost. Big enough to
+// tip a genuinely-close tradeoff toward fewer hops (e.g. one bigger jump over water instead
+// of several cheap ones the long way around), small enough that Regular still wins outright
+// whenever there's no real detour being avoided. Picked as a reasonable starting point, not
+// derived from anything in-game — tune this if routes still feel too hop-heavy or too costly.
+export const BALANCED_HOP_PENALTY = 20_000_000;
+
 export function kitCostTotal(cost) {
   return cost.twigs + cost.pebbles + cost.putty;
 }
@@ -144,6 +151,11 @@ function cellKey(x, y) {
  * @param {boolean} [options.allowPlayers=true] allow stepping through other players' cells (target is always reachable regardless)
  * @param {boolean} [options.skipHardAbunakki=false] treat ABUNAKKI_HARD_LEVEL+ camps as impassable stepping stones
  * @param {"hops"|"kitCost"} [options.costMode="hops"] minimize jump count, or total kit+takeover spend
+ * @param {number} [options.hopPenalty=0] added to every hop's cost under costMode "kitCost" — a fixed
+ *   "effort" cost independent of kit price, so the search stops treating hop count as free. At 0 (the
+ *   "Cheapest" mode) it's pure resource-cost minimization, which can produce a long chain of hops to
+ *   avoid ever paying for a bigger kit. A meaningful penalty (the "Balanced" mode) tips genuinely-close
+ *   tradeoffs toward fewer, bigger hops — e.g. one Mega jump over water instead of walking around it.
  * @param {number} [options.forceTierRange] bill every hop at this tier's flat cost regardless of distance
  * @param {number} [options.firstHopRange=0] start's already-built flinger range — first hop is free of kit cost (still charges takeover cost)
  * @param {{x,y}} [options.homeCell] player's real home position, for takeoverCost()'s adjacency discount
@@ -161,6 +173,7 @@ export function findRoute(getCell, start, target, options = {}) {
     allowPlayers = true,
     skipHardAbunakki = false,
     costMode = "hops",
+    hopPenalty = 0,
     forceTierRange = null,
     firstHopRange = 0,
     homeCell = null,
@@ -208,14 +221,14 @@ export function findRoute(getCell, start, target, options = {}) {
   const cheapestPerHopCost = kitCostTotal(cheapestTier.cost);
   const edgeCost = (distance, tx, ty) =>
     costMode === "kitCost"
-      ? kitCostTotal(tierForRange(distance).cost) + takeoverCost(getCell(tx, ty), { adjacentToHome: isAdjacentToHome(tx, ty) })
+      ? kitCostTotal(tierForRange(distance).cost) + takeoverCost(getCell(tx, ty), { adjacentToHome: isAdjacentToHome(tx, ty) }) + hopPenalty
       : 1;
   const effectiveMaxHop = Math.max(jumpCap, firstHopRange || 0);
   const heuristic = (x, y) => {
     const raw = wrappedHexDistance(x, y, target.x, target.y).distance;
     const d = Math.max(0, raw - targetRadius);
     return costMode === "kitCost"
-      ? Math.ceil(d / cheapestTier.range) * (cheapestPerHopCost + TAKEOVER_MIN)
+      ? Math.ceil(d / cheapestTier.range) * (cheapestPerHopCost + TAKEOVER_MIN + hopPenalty)
       : Math.ceil(d / effectiveMaxHop);
   };
 
@@ -256,7 +269,7 @@ export function findRoute(getCell, start, target, options = {}) {
       const tentativeG = g + (
         costMode !== "kitCost"
           ? (kitFree ? 0 : 1)
-          : (kitFree ? takeoverCost(getCell(n.x, n.y), { adjacentToHome: isAdjacentToHome(n.x, n.y) }) : edgeCost(distance, n.x, n.y))
+          : (kitFree ? takeoverCost(getCell(n.x, n.y), { adjacentToHome: isAdjacentToHome(n.x, n.y) }) + hopPenalty : edgeCost(distance, n.x, n.y))
       );
       if (tentativeG < (gScore.get(nKey) ?? Infinity)) {
         gScore.set(nKey, tentativeG);
