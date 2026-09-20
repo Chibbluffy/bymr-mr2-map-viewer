@@ -110,6 +110,41 @@ function _pickBestLaunchCell(pick, targetCell) {
   return best;
 }
 
+// Jointly picks the best (start, target outpost) pair when BOTH sides are
+// still unresolved player picks — tries every combination rather than
+// resolving one side off a fixed reference point (e.g. the start player's
+// home) and the other off that result. That two-phase approach can produce a
+// badly mismatched pair: a spread-out empire's home base is often nowhere
+// near its actual closest outpost to the target, so picking the target
+// relative to home first can strand the route on the wrong side of the map
+// even though a much closer pair of outposts exists on both sides.
+function _pickBestRoutePair(startPick, targetPick) {
+  const startCandidates = [startPick?.home, ...(startPick?.outposts || [])].filter(Boolean);
+  const targetCandidates = targetPick?.outposts || [];
+  if (!startCandidates.length || !targetCandidates.length) {
+    return { startCell: startCandidates[0] || null, targetCell: targetCandidates[0] || null };
+  }
+
+  let bestStart = startCandidates[0];
+  let bestTarget = targetCandidates[0];
+  let bestRemaining = Infinity;
+  let bestRange = -1;
+  for (const s of startCandidates) {
+    const range = _flingerRangeOf(s);
+    for (const t of targetCandidates) {
+      const { distance } = wrappedHexDistance(s.x, s.y, t.x, t.y);
+      const remaining = Math.max(0, distance - range);
+      if (remaining < bestRemaining || (remaining === bestRemaining && range > bestRange)) {
+        bestRemaining = remaining;
+        bestRange = range;
+        bestStart = s;
+        bestTarget = t;
+      }
+    }
+  }
+  return { startCell: bestStart, targetCell: bestTarget };
+}
+
 // Signed compact number: 1234567 -> "+1.2M", -500 -> "-500", 0 -> "0". Unlike
 // _fmtNum(), negatives aren't clamped — a leaderboard delta can be real.
 function _fmtSigned(n) {
@@ -886,28 +921,40 @@ export class ViewerApp {
     return targetMode === "player" && ref === "home";
   }
 
-  // Each side is independently "player" or "coordinates". Target resolves
-  // first (closest outpost to start, or their main yard directly — see
-  // _pickPathCell()/_pathTargetIsMainYard()); start resolves second via
-  // _pickBestLaunchCell() now that target is known.
+  // Each side is independently "player" or "coordinates". Whenever one side
+  // is pinned to fixed coordinates (or the target is the player's own main
+  // yard), the other resolves relative to that single fixed point. When
+  // BOTH sides are still unresolved player picks, there's no fixed
+  // reference to resolve either one against first — _pickBestRoutePair()
+  // searches every (start outpost, target outpost) combination jointly
+  // instead, so the pair actually minimizes real launch distance rather
+  // than being anchored to (say) the start player's home base, which is
+  // often nowhere near their closest outpost to the target.
   _resolvePathCells() {
     const startMode  = document.querySelector('input[name="path-start-mode"]:checked')?.value  || "player";
     const targetMode = document.querySelector('input[name="path-target-mode"]:checked')?.value || "player";
 
     const startCoords  = startMode  === "coords" ? this._readPathCoords("start")  : null;
     const targetCoords = targetMode === "coords" ? this._readPathCoords("target") : null;
-
-    const startRefForTarget = startMode === "coords" ? { home: startCoords, outposts: [] } : this._pathStartPick;
     const mainYardTarget = this._pathTargetIsMainYard();
-    const targetCell = targetMode === "coords"
-      ? targetCoords
-      : mainYardTarget
-        ? (this._pathTargetPick?.home ?? null)
-        : _pickPathCell(this._pathTargetPick, startRefForTarget);
 
-    const startCell = startMode === "coords"
-      ? startCoords
-      : _pickBestLaunchCell(this._pathStartPick, targetCell);
+    let startCell;
+    let targetCell;
+
+    if (targetMode === "coords") {
+      targetCell = targetCoords;
+      startCell = startMode === "coords" ? startCoords : _pickBestLaunchCell(this._pathStartPick, targetCell);
+    } else if (mainYardTarget) {
+      targetCell = this._pathTargetPick?.home ?? null;
+      startCell = startMode === "coords" ? startCoords : _pickBestLaunchCell(this._pathStartPick, targetCell);
+    } else if (startMode === "coords") {
+      targetCell = _pickPathCell(this._pathTargetPick, { home: startCoords, outposts: [] });
+      startCell = startCoords;
+    } else {
+      const pair = _pickBestRoutePair(this._pathStartPick, this._pathTargetPick);
+      startCell = pair.startCell;
+      targetCell = pair.targetCell;
+    }
 
     const startRange = startMode === "player" ? _flingerRangeOf(startCell) : 0;
 

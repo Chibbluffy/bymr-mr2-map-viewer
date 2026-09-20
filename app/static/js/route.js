@@ -264,7 +264,10 @@ export function findRoute(getCell, start, target, options = {}) {
       if (!nIsExactTarget && !isPassable(n.x, n.y)) continue;
       if (nIsExactTarget && !isPassable(n.x, n.y, { asTarget: true })) continue;
 
-      const distance = hexDistance(pos.x, pos.y, n.x, n.y);
+      // neighborsWithin() wraps coordinates around map edges, so a neighbor can be a
+      // genuine short hop across the seam (col/row 799 adjacent to 0) — plain
+      // hexDistance() doesn't know that and would measure almost the full map width.
+      const distance = wrappedHexDistance(pos.x, pos.y, n.x, n.y).distance;
       const kitFree = isStartNode && hasFreeFirstHop;
       const tentativeG = g + (
         costMode !== "kitCost"
@@ -302,7 +305,9 @@ function reconstruct(cameFrom, targetPos, start, forceTierRange, firstHopFree, g
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1];
     const b = path[i];
-    const distance = hexDistance(a.x, a.y, b.x, b.y);
+    // Same wraparound-awareness as the A* loop above — a hop across the map
+    // seam is a real short jump, not the ~800-wide raw offset.
+    const distance = wrappedHexDistance(a.x, a.y, b.x, b.y).distance;
 
     const adjacentToHome = isAdjacentToHome ? isAdjacentToHome(b.x, b.y) : false;
     const hopTakeover = getCell ? takeoverCost(getCell(b.x, b.y), { adjacentToHome }) : 0;
@@ -331,7 +336,7 @@ function reconstruct(cameFrom, targetPos, start, forceTierRange, firstHopFree, g
   if (finalApproach) {
     const from = path[path.length - 1];
     hops.push({
-      from, to: finalApproach, distance: hexDistance(from.x, from.y, finalApproach.x, finalApproach.y),
+      from, to: finalApproach, distance: wrappedHexDistance(from.x, from.y, finalApproach.x, finalApproach.y).distance,
       kitTier: null, kitName: null, takeoverCost: 0, adjacentToHome: false, isFinalApproach: true,
     });
     path.push(finalApproach);
