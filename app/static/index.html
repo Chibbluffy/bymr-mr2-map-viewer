@@ -15,7 +15,7 @@
       <main class="map-shell">
         <section class="map-panel panel">
 
-          <!-- Top bar — brand, world picker, session (all pinned, login hideable) -->
+          <!-- Top bar — brand, world picker, View As (all pinned) -->
           <header class="top-bar">
             <div class="top-bar-brand"><strong>BYM</strong> Map Room 2 Viewer</div>
 
@@ -25,58 +25,7 @@
               </select>
             </div>
 
-            <button
-              id="activity-toggle-button"
-              class="icon-button top-bar-icon-button"
-              type="button"
-              aria-label="World activity"
-              title="World activity — events, leaderboard, inactive players"
-              disabled
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M3 12h4l2-7 4 14 2-7h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-
-            <div class="top-bar-field top-bar-locate">
-              <button
-                id="locate-toggle-button"
-                class="icon-button top-bar-icon-button"
-                type="button"
-                aria-label="Locate a player"
-                aria-expanded="false"
-                aria-haspopup="true"
-                title="Locate — find which world a player is currently in"
-                disabled
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7Zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5Z" fill="currentColor" />
-                </svg>
-              </button>
-
-              <div id="locate-popover" class="session-popover locate-popover panel" hidden>
-                <p class="eyebrow">Locate</p>
-                <h2>Find a player across every polled world</h2>
-                <p class="muted locate-help">
-                  Looks up which world a player's home base is on right now — useful
-                  when they've relocated or recycled and no longer show up on the
-                  world you last saw them in.
-                </p>
-                <div class="locate-search-row">
-                  <input
-                    id="locate-input"
-                    class="search-input"
-                    type="search"
-                    placeholder="Player name"
-                    autocomplete="off"
-                    spellcheck="false"
-                  >
-                  <button id="locate-search-button" class="primary-button" type="button">Find</button>
-                </div>
-                <div id="locate-results" class="locate-results"></div>
-                <p id="locate-status" class="muted"></p>
-              </div>
-            </div>
+            <p id="status-text" class="muted top-bar-status" hidden></p>
 
             <div class="top-bar-spacer"></div>
 
@@ -93,11 +42,10 @@
 
               <div id="view-as-popover" class="session-popover view-as-popover panel" hidden>
                 <p class="eyebrow">View as</p>
-                <h2>Highlight your bases without logging in</h2>
+                <h2>Highlight your bases</h2>
                 <p class="muted view-as-help">
-                  Purely local — matches a username already visible on this world's map. It
-                  highlights which cells are yours and tracks route progress, but it can't
-                  unlock resource viewing; that still needs a real login.
+                  Matches a username already visible on this world's map — highlights
+                  which cells are yours and tracks route progress.
                 </p>
                 <div class="search-shell">
                   <input
@@ -112,44 +60,6 @@
                 </div>
                 <p id="view-as-status" class="muted"></p>
                 <button id="view-as-clear-button" class="secondary-button" type="button" hidden>Clear</button>
-              </div>
-            </div>
-
-            <div class="top-bar-field top-bar-session">
-              <button
-                id="session-trigger-button"
-                class="session-trigger-button"
-                type="button"
-                aria-expanded="false"
-                aria-haspopup="true"
-              >
-                <span id="session-trigger-label">Sign in</span>
-                <svg class="session-trigger-caret" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M7 10l5 5 5-5z" />
-                </svg>
-              </button>
-
-              <div id="session-popover" class="session-popover panel" hidden>
-                <div class="session-header">
-                  <div>
-                    <p class="eyebrow">Session</p>
-                    <h2 id="session-name">Signed out</h2>
-                  </div>
-                  <button id="logout-button" class="secondary-button" type="button" hidden>Log out</button>
-                </div>
-                <p id="session-world" class="muted session-world" hidden></p>
-                <form id="login-form" class="login-form">
-                  <label>
-                    <span>Email</span>
-                    <input id="email-input" name="email" type="email" autocomplete="username" required>
-                  </label>
-                  <label>
-                    <span>Password</span>
-                    <input id="password-input" name="password" type="password" autocomplete="current-password" required>
-                  </label>
-                  <button id="login-button" class="primary-button" type="submit">Sign in</button>
-                </form>
-                <p id="session-status" class="muted">Optional — log in to see live resource data. Your credentials go straight to the game server, never to this app's own server.</p>
               </div>
             </div>
           </header>
@@ -455,6 +365,7 @@
                 <p id="path-status" class="muted path-status"></p>
               </div>
 
+              <!-- Entry point hidden for now — the tool itself is intact, just not reachable. -->
               <div class="map-tool-buttons">
                 <button
                   id="path-toggle-button"
@@ -464,6 +375,7 @@
                   aria-expanded="false"
                   title="Plan a takeover route"
                   disabled
+                  hidden
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <circle cx="5" cy="19" r="2" fill="currentColor" />
@@ -516,24 +428,6 @@
                   </svg>
                   <span class="bg-load-label">Reload map</span>
                 </button>
-              </div>
-
-              <!-- Hidden here; only /tnb/export/ (app.js) reveals and wires this up. -->
-              <div id="export-button-group" class="map-control-group export-button-group" hidden>
-                <button
-                  id="export-button"
-                  class="bg-load-button"
-                  type="button"
-                  aria-label="Export map data to CSV"
-                  title="Export player data to CSV"
-                  disabled
-                >
-                  <svg class="bg-load-icon" viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M5 20h14v-2H5v2Zm7-18-5 5h3v6h4V7h3l-5-5Z" />
-                  </svg>
-                  <span id="export-button-label" class="bg-load-label">Export CSV</span>
-                </button>
-                <p id="export-resource-warning" class="export-resource-warning" hidden></p>
               </div>
 
               <!-- Navigation group -->
@@ -598,129 +492,6 @@
             </div>
           </div><!-- end map-surface -->
 
-          <!-- Activity modal — events / leaderboard / inactive players -->
-          <div id="activity-modal" class="modal-overlay" hidden>
-            <div class="panel modal-panel activity-modal-panel">
-              <div class="activity-modal-header">
-                <div>
-                  <p class="eyebrow">Activity</p>
-                  <h2>World Activity</h2>
-                </div>
-                <button id="activity-close-button" class="cell-detail-close" type="button" aria-label="Close" title="Close">×</button>
-              </div>
-
-              <div class="activity-tabs" role="tablist">
-                <button id="activity-tab-events" class="activity-tab" type="button" role="tab" aria-selected="true">Events</button>
-                <button id="activity-tab-activity-leaderboard" class="activity-tab" type="button" role="tab" aria-selected="false">Activity</button>
-                <button id="activity-tab-empire-leaderboard" class="activity-tab" type="button" role="tab" aria-selected="false">Empire Points</button>
-                <button id="activity-tab-inactive" class="activity-tab" type="button" role="tab" aria-selected="false">Inactive</button>
-              </div>
-
-              <div id="activity-panel-events" class="activity-panel">
-                <div class="activity-events-scope">
-                  <label class="filter-option"><input type="radio" name="activity-events-scope" value="world" checked> This world</label>
-                  <label class="filter-option"><input type="radio" name="activity-events-scope" value="all"> All worlds</label>
-                </div>
-                <div class="activity-filters">
-                  <div id="activity-events-type-options" class="filter-options filter-options--inline">
-                    <label class="filter-option"><input type="checkbox" value="TAKEOVER"> Takeovers</label>
-                    <label class="filter-option"><input type="checkbox" value="CLAIMED_FROM_WILD"> Claimed from wild</label>
-                    <label class="filter-option"><input type="checkbox" value="RECYCLED"> Recycled</label>
-                    <label class="filter-option"><input type="checkbox" value="RELOCATED"> Relocated home</label>
-                    <label class="filter-option"><input type="checkbox" value="JOINED"> Joined world</label>
-                    <label class="filter-option"><input type="checkbox" value="RENAMED"> Renamed</label>
-                    <label class="filter-option"><input type="checkbox" value="KIT_BUILT"> Kit built</label>
-                    <label class="filter-option"><input type="checkbox" value="KIT_UPGRADED"> Kit upgraded</label>
-                  </div>
-                  <input
-                    id="activity-events-player-input"
-                    class="search-input"
-                    type="search"
-                    placeholder="Filter by player name…"
-                    autocomplete="off"
-                    spellcheck="false"
-                  >
-                </div>
-                <p class="muted activity-events-hint">Each row is everything that happened in one poll cycle between the same two players — click to see the individual cells.</p>
-                <div id="activity-events-list" class="activity-list"></div>
-                <button id="activity-events-more-button" class="secondary-button activity-more-button" type="button" hidden>Load more</button>
-                <p id="activity-events-status" class="muted activity-status"></p>
-              </div>
-
-              <div id="activity-panel-activity-leaderboard" class="activity-panel" hidden>
-                <div class="activity-filters">
-                  <input
-                    id="activity-al-filter-input"
-                    class="search-input"
-                    type="search"
-                    placeholder="Filter by player name…"
-                    autocomplete="off"
-                    spellcheck="false"
-                  >
-                </div>
-                <p class="muted activity-table-hint">Gains and losses shown separately, not netted — taking 5 and losing 5 still shows as +5 / -5, not "0". Losing outposts doesn't count against a player on the Inactive tab.</p>
-                <div class="activity-table-wrap">
-                  <table id="activity-al-table" class="activity-table">
-                    <thead>
-                      <tr>
-                        <th data-sort="name">Player</th>
-                        <th data-sort="outpost_count">Outposts</th>
-                        <th data-sort="net_day">Day (+/-)</th>
-                        <th data-sort="net_week">Week (+/-)</th>
-                        <th data-sort="net_month">Month (+/-)</th>
-                      </tr>
-                    </thead>
-                    <tbody id="activity-al-tbody"></tbody>
-                  </table>
-                </div>
-                <button id="activity-al-more-button" class="secondary-button activity-more-button" type="button" hidden>View more</button>
-                <p id="activity-al-status" class="muted activity-status"></p>
-              </div>
-
-              <div id="activity-panel-empire-leaderboard" class="activity-panel" hidden>
-                <div class="activity-filters">
-                  <input
-                    id="activity-el-filter-input"
-                    class="search-input"
-                    type="search"
-                    placeholder="Filter by player name…"
-                    autocomplete="off"
-                    spellcheck="false"
-                  >
-                </div>
-                <p class="muted activity-table-hint">Current total empire value, summed across every cell a player owns right now (home base and every outpost) — not just their main yard.</p>
-                <div class="activity-table-wrap">
-                  <table id="activity-el-table" class="activity-table">
-                    <thead>
-                      <tr>
-                        <th data-sort="name">Player</th>
-                        <th data-sort="total_empirevalue">Total Empire Value</th>
-                        <th data-sort="total_cells">Cells</th>
-                        <th data-sort="delta_day">Day Δ</th>
-                        <th data-sort="delta_week">Week Δ</th>
-                        <th data-sort="delta_month">Month Δ</th>
-                      </tr>
-                    </thead>
-                    <tbody id="activity-el-tbody"></tbody>
-                  </table>
-                </div>
-                <button id="activity-el-more-button" class="secondary-button activity-more-button" type="button" hidden>View more</button>
-                <p id="activity-el-status" class="muted activity-status"></p>
-              </div>
-
-              <div id="activity-panel-inactive" class="activity-panel" hidden>
-                <div class="activity-filters">
-                  <label class="path-coord-field activity-days-field">
-                    <span>No gains for at least (days)</span>
-                    <input id="activity-inactive-days" type="number" min="1" max="90" value="7" inputmode="numeric">
-                  </label>
-                </div>
-                <p class="muted activity-table-hint">Gaining empire value or an outpost resets this; losing outposts to an attacker does not — that's not a sign of the player's own inactivity.</p>
-                <div id="activity-inactive-list" class="activity-list"></div>
-                <p id="activity-inactive-status" class="muted activity-status"></p>
-              </div>
-            </div>
-          </div>
         </section>
       </main>
     </div>

@@ -5,13 +5,11 @@ import {
   STABLE_VIEWER_CONFIG,
   SELECTED_WORLD_STORAGE_KEY,
   SEARCH_RESULT_LIMIT,
-  buildTokenStorageKey,
   buildTerrainCacheKey,
   buildSnapshotCacheKey,
   buildHomePosKey,
   buildRouteStorageKey,
   buildViewAsKey,
-  cellKey,
   escapeHtml,
   getTerrainLabel,
   isWater,
@@ -21,26 +19,7 @@ import {
 } from "./shared.js";
 import { findRoute, wrappedHexDistance, BALANCED_HOP_PENALTY } from "./route.js";
 
-// MR3 sibling viewer, linked when a logged-in account's world isn't a polled MR2 world.
-const OTHER_VIEWER_URL = "https://bymr-maproom3-viewer.chibbluffy.fyi/";
-const NOT_ON_MR2_MESSAGE =
-  `This account isn't on a Map Room 2 world. Please make sure it is on an ` +
-  `upgraded map room, or try the other map viewer: ` +
-  `<a href="${OTHER_VIEWER_URL}" target="_blank" rel="noopener">${OTHER_VIEWER_URL}</a>`;
-
 const NO_WORLDS_MESSAGE = "No worlds have been polled yet — check back in a few minutes.";
-
-// Shown when a base's resources are hidden because canEnrich is false.
-const LOGIN_PROMPT_HTML = `
-  <div class="detail-login-prompt">
-    <p class="detail-login-prompt-text">
-      Log in to see this base's live resource stockpile. Your BYM credentials
-      go straight from your browser to the game server — never to this app's
-      own server.
-    </p>
-    <button class="secondary-button detail-login-button" type="button">Log in</button>
-  </div>
-`;
 
 // Guards the global keyboard shortcuts (+/-/H/Escape) so they don't fire while typing.
 function _isTypingInField() {
@@ -145,110 +124,12 @@ function _pickBestRoutePair(startPick, targetPick) {
   return { startCell: bestStart, targetCell: bestTarget };
 }
 
-// Signed compact number: 1234567 -> "+1.2M", -500 -> "-500", 0 -> "0". Unlike
-// _fmtNum(), negatives aren't clamped — a leaderboard delta can be real.
-function _fmtSigned(n) {
-  const v = Number(n) || 0;
-  const sign = v > 0 ? "+" : v < 0 ? "-" : "";
-  return sign + _fmtNum(Math.abs(v));
-}
-
-// "+5 / -3" — gains and losses shown separately, never netted.
-function _fmtGainLoss(gain, loss) {
-  const g = Number(gain) || 0, l = Number(loss) || 0;
-  const gainHtml = g > 0 ? `<span class="activity-gain">+${_fmtNum(g)}</span>` : `<span class="muted">+0</span>`;
-  const lossHtml = l > 0 ? `<span class="activity-loss">-${_fmtNum(l)}</span>` : `<span class="muted">-0</span>`;
-  return `${gainHtml} / ${lossHtml}`;
-}
-
-// Signed number, colour-coded — for a plain net delta (unlike _fmtGainLoss()).
-function _fmtSignedCls(n) {
-  const v = Number(n) || 0;
-  const cls = v > 0 ? "activity-gain" : v < 0 ? "activity-loss" : "muted";
-  return `<span class="${cls}">${_fmtSigned(v)}</span>`;
-}
-
-// Generic sort for leaderboard tables — {field, dir}. "name" sorts as text, else numeric.
-function _sortRows(rows, { field, dir }) {
-  const mul = dir === "asc" ? 1 : -1;
-  return [...rows].sort((a, b) => {
-    if (field === "name") return mul * String(a.name || "").localeCompare(String(b.name || ""));
-    return mul * ((Number(a[field]) || 0) - (Number(b[field]) || 0));
-  });
-}
-
-/** Reflects a table's sort state onto its <th data-sort> elements (arrow via CSS ::after). */
-function _updateSortHeaders(table, { field, dir }) {
-  if (!table) return;
-  table.querySelectorAll("th[data-sort]").forEach((th) => {
-    const active = th.dataset.sort === field;
-    th.toggleAttribute("data-sort-active", active);
-    th.dataset.sortDir = active ? (dir === "asc" ? "▲" : "▼") : "";
-  });
-}
-
-function _fmtRelTime(unixSeconds) {
-  const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
-// "MEGA+" -> "Mega+" — see poller.py's _classify_outpost_kit_tier().
-function _fmtKitTier(tier) {
-  if (!tier) return "Unknown Kit";
-  const m = tier.match(/^([A-Z]+)(\+*)$/);
-  if (!m) return escapeHtml(tier);
-  return escapeHtml(m[1][0] + m[1].slice(1).toLowerCase() + m[2]);
-}
-
-// Human-readable one-liner for a grouped world_events row (db.py's list_events_grouped()).
-function _describeEventGroup(g) {
-  const place = g.base_type === MR2.cellTypes.HOMECELL ? "home base"
-    : g.base_type === MR2.cellTypes.OUTPOST ? "outposts" : "bases";
-  const placeSingular = g.base_type === MR2.cellTypes.HOMECELL ? "home base"
-    : g.base_type === MR2.cellTypes.OUTPOST ? "outpost" : "base";
-  const n = g.count;
-  switch (g.event_type) {
-    case "TAKEOVER":
-      return n === 1
-        ? `${escapeHtml(g.new_name || "Someone")} took ${escapeHtml(g.old_name || "a player")}'s ${placeSingular}`
-        : `${escapeHtml(g.new_name || "Someone")} took ${n} ${place} from ${escapeHtml(g.old_name || "a player")}`;
-    case "CLAIMED_FROM_WILD":
-      return n === 1
-        ? `${escapeHtml(g.new_name || "Someone")} claimed a wild tribe camp`
-        : `${escapeHtml(g.new_name || "Someone")} claimed ${n} wild tribe camps`;
-    case "RECYCLED":
-      return n === 1
-        ? `${escapeHtml(g.old_name || "A player")}'s ${placeSingular} was recycled`
-        : `${escapeHtml(g.old_name || "A player")} recycled ${n} ${place}`;
-    case "RELOCATED":
-      return `${escapeHtml(g.new_name || g.old_name || "A player")} relocated their main yard`;
-    case "JOINED":
-      return `${escapeHtml(g.new_name || "Someone")} joined this world`;
-    case "RENAMED":
-      return `${escapeHtml(g.old_name || "A player")} is now known as ${escapeHtml(g.new_name || "someone else")}`;
-    case "KIT_BUILT":
-      return n === 1
-        ? `${escapeHtml(g.new_name || "Someone")} built a ${_fmtKitTier(g.new_tier)} Kit`
-        : `${escapeHtml(g.new_name || "Someone")} built ${n} new outpost kits`;
-    case "KIT_UPGRADED":
-      return n === 1
-        ? `${escapeHtml(g.new_name || "Someone")} upgraded from ${_fmtKitTier(g.old_tier)} to ${_fmtKitTier(g.new_tier)} Kit`
-        : `${escapeHtml(g.new_name || "Someone")} upgraded ${n} outpost kits`;
-    default:
-      return escapeHtml(g.event_type);
-  }
-}
-
 // ─── ViewerApp ────────────────────────────────────────────────────────────────
 
 export class ViewerApp {
   constructor() {
     this.api = null;
     this.config = null;
-    this.session = null;
     this.hoveredCell = null;
     this.selectedCell = null;
     this.searchEntries = [];
@@ -260,7 +141,6 @@ export class ViewerApp {
     // ── World picker state ─────────────────────────────────────────────────
     this.polledWorlds = [];      // [{uuid, name, map_version, player_count, last_polled_at}, ...] from /api/worlds
     this.selectedWorldId = null; // uuid of the world currently on screen
-    this.canEnrich = false;      // true when selectedWorldId === session.map.worldid
     this._hadStoredWorldSelection = false;
 
     // ── World-load state ───────────────────────────────────────────────────
@@ -268,43 +148,21 @@ export class ViewerApp {
     this._terrainBytes     = null;
     this._worldLoadPromise = null;
     this._worldLoadGeneration = 0; // bumped on world switch; a stale in-flight load discards its result
-    this._enrichToken = 0; // bumped per cell click so a stale getarea reply can't clobber a later selection
 
-    // ── "View as" — client-only identity, no login ────────────────────────
+    // ── "View as" — client-only identity; the only identity mechanism now
+    // that real login is gone ───────────────────────────────────────────────
     this._viewAs = null; // {uid, name} | null
 
-    // ── Path tool (route planner) ──────────────────────────────────────────
+    // ── Path tool (route planner) — UI entry point hidden for now, kept intact ──
     this._pathStartPick  = null;
     this._pathTargetPick = null;
     this.currentRoute     = null; // { route, originalOwners, options, startName, targetName } | null
     this._routeIsSaved    = false;
 
-    // ── Activity modal ──────────────────────────────────────────────────────
-    this._activityTab = "events"; // "events" | "activity-leaderboard" | "empire-leaderboard" | "inactive"
-    this._eventsCursor = null;
-    this._eventsExhausted = false;
-    // Both leaderboards fetch once per modal-open, unpaginated; sort/filter/page client-side.
-    this._activityLbRows = [];
-    this._activityLbSort = { field: "net_day", dir: "desc" };
-    this._activityLbShown = 50; // how many of the sorted/filtered rows are currently rendered — "View more" grows this
-    this._empireLbRows = [];
-    this._empireLbSort = { field: "total_empirevalue", dir: "desc" };
-    this._empireLbShown = 50;
-
     this.elements = {
       appRoot:            document.getElementById("app"),
       worldSelect:        document.getElementById("world-select"),
-      emailInput:         document.getElementById("email-input"),
-      passwordInput:      document.getElementById("password-input"),
-      loginForm:          document.getElementById("login-form"),
-      loginButton:        document.getElementById("login-button"),
-      logoutButton:       document.getElementById("logout-button"),
-      sessionName:        document.getElementById("session-name"),
-      sessionStatus:      document.getElementById("session-status"),
-      sessionWorld:       document.getElementById("session-world"),
-      sessionTriggerButton: document.getElementById("session-trigger-button"),
-      sessionTriggerLabel: document.getElementById("session-trigger-label"),
-      sessionPopover:       document.getElementById("session-popover"),
+      statusText:         document.getElementById("status-text"),
       detailPanel:        document.getElementById("cell-detail-panel"),
       detailsTitle:       document.getElementById("details-title"),
       detailsContent:     document.getElementById("details-content"),
@@ -332,7 +190,6 @@ export class ViewerApp {
       filterClearButton:    document.getElementById("filter-clear-button"),
       filterMatchCount:     document.getElementById("filter-match-count"),
 
-      viewAsField:          document.querySelector(".top-bar-viewas"),
       viewAsTriggerButton:  document.getElementById("view-as-trigger-button"),
       viewAsTriggerLabel:   document.getElementById("view-as-trigger-label"),
       viewAsPopover:        document.getElementById("view-as-popover"),
@@ -375,43 +232,6 @@ export class ViewerApp {
       pathProgressReadout: document.getElementById("path-progress-readout"),
       pathSaveButton:      document.getElementById("path-save-button"),
       pathStatus:          document.getElementById("path-status"),
-
-      activityToggleButton: document.getElementById("activity-toggle-button"),
-      activityModal:        document.getElementById("activity-modal"),
-      activityCloseButton:  document.getElementById("activity-close-button"),
-      activityTabEvents:           document.getElementById("activity-tab-events"),
-      activityTabActivityLb:       document.getElementById("activity-tab-activity-leaderboard"),
-      activityTabEmpireLb:         document.getElementById("activity-tab-empire-leaderboard"),
-      activityTabInactive:         document.getElementById("activity-tab-inactive"),
-      activityPanelEvents:         document.getElementById("activity-panel-events"),
-      activityPanelActivityLb:     document.getElementById("activity-panel-activity-leaderboard"),
-      activityPanelEmpireLb:       document.getElementById("activity-panel-empire-leaderboard"),
-      activityPanelInactive:       document.getElementById("activity-panel-inactive"),
-      activityEventsTypeOptions: document.getElementById("activity-events-type-options"),
-      activityEventsPlayerInput: document.getElementById("activity-events-player-input"),
-      activityEventsList:        document.getElementById("activity-events-list"),
-      activityEventsMoreButton:  document.getElementById("activity-events-more-button"),
-      activityEventsStatus:      document.getElementById("activity-events-status"),
-      activityAlFilterInput: document.getElementById("activity-al-filter-input"),
-      activityAlTable:       document.getElementById("activity-al-table"),
-      activityAlTbody:       document.getElementById("activity-al-tbody"),
-      activityAlMoreButton:  document.getElementById("activity-al-more-button"),
-      activityAlStatus:      document.getElementById("activity-al-status"),
-      activityElFilterInput: document.getElementById("activity-el-filter-input"),
-      activityElTable:       document.getElementById("activity-el-table"),
-      activityElTbody:       document.getElementById("activity-el-tbody"),
-      activityElMoreButton:  document.getElementById("activity-el-more-button"),
-      activityElStatus:      document.getElementById("activity-el-status"),
-      activityInactiveDays:   document.getElementById("activity-inactive-days"),
-      activityInactiveList:   document.getElementById("activity-inactive-list"),
-      activityInactiveStatus: document.getElementById("activity-inactive-status"),
-
-      locateToggleButton: document.getElementById("locate-toggle-button"),
-      locatePopover:      document.getElementById("locate-popover"),
-      locateInput:        document.getElementById("locate-input"),
-      locateSearchButton: document.getElementById("locate-search-button"),
-      locateResults:      document.getElementById("locate-results"),
-      locateStatus:       document.getElementById("locate-status"),
     };
   }
 
@@ -420,7 +240,7 @@ export class ViewerApp {
     [
       this.elements.searchResults, this.elements.filterPlayerResults,
       this.elements.viewAsResults, this.elements.pathStartResults, this.elements.pathTargetResults,
-      this.elements.sessionPopover, this.elements.viewAsPopover, this.elements.locatePopover,
+      this.elements.viewAsPopover,
     ].forEach(el => { if (el) document.body.appendChild(el); });
 
     this.config = setViewerConfig({ ...STABLE_VIEWER_CONFIG });
@@ -434,18 +254,6 @@ export class ViewerApp {
     this._hadStoredWorldSelection = !!localStorage.getItem(SELECTED_WORLD_STORAGE_KEY);
 
     await this._initPolledWorlds();
-
-    // Try to restore session from localStorage
-    const tokenKey = buildTokenStorageKey(this.config);
-    const saved = localStorage.getItem(tokenKey);
-    if (saved) {
-      try {
-        const session = JSON.parse(saved);
-        await this._restoreSession(session.token);
-      } catch {
-        localStorage.removeItem(buildTokenStorageKey(this.config));
-      }
-    }
   }
 
   // ─── Initialisation ─────────────────────────────────────────────────────────
@@ -473,7 +281,6 @@ export class ViewerApp {
     this.renderer.onCellClick = (cell) => {
       this.selectedCell = cell;
       this._renderDetails(cell);
-      this._enrichSelectedCell(cell);
     };
 
     this.renderer.onCoordsChange = (x, y) => {
@@ -493,8 +300,6 @@ export class ViewerApp {
 
   _setupEventListeners() {
     const {
-      loginForm,
-      logoutButton,
       findHomeButton,
       refreshButton,
       zoomInButton,
@@ -502,13 +307,6 @@ export class ViewerApp {
       searchToggleButton,
       searchInput,
     } = this.elements;
-
-    loginForm?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      await this._handleLogin();
-    });
-
-    logoutButton?.addEventListener("click", () => this._handleLogout());
 
     findHomeButton?.addEventListener("click", () => {
       if (!this.renderer) return;
@@ -540,20 +338,15 @@ export class ViewerApp {
     searchInput?.addEventListener("input", () => this._onSearchInput());
 
     this._setupFilterPanel();
-    this._setupSessionPopover();
     this._setupLegendPanel();
     this._setupViewAs();
     this._setupPathPanel();
-    this._setupActivityModal();
-    this._setupLocate();
 
-    // Re-clamp whichever top-bar popover is open on resize/orientation change —
-    // their position is computed once at open time, not tracked continuously.
+    // Re-clamp the View As popover if it's open on resize/orientation change —
+    // its position is computed once at open time, not tracked continuously.
     window.addEventListener("resize", () => {
-      const { sessionPopover, sessionTriggerButton, viewAsPopover, viewAsTriggerButton, locatePopover, locateToggleButton } = this.elements;
-      if (sessionPopover && !sessionPopover.hidden) this._positionPopover(sessionPopover, sessionTriggerButton, 260, { align: "right" });
+      const { viewAsPopover, viewAsTriggerButton } = this.elements;
       if (viewAsPopover && !viewAsPopover.hidden) this._positionPopover(viewAsPopover, viewAsTriggerButton, 280, { align: "right" });
-      if (locatePopover && !locatePopover.hidden) this._positionPopover(locatePopover, locateToggleButton, 300, { align: "left" });
     });
 
     this.elements.detailsCloseButton?.addEventListener("click", () => this._deselectCell());
@@ -569,42 +362,6 @@ export class ViewerApp {
       }
       if (e.key === "Escape") this._deselectCell();
     });
-  }
-
-  // ─── Session popover (top bar) ─────────────────────────────────────────────
-
-  _setupSessionPopover() {
-    const { sessionTriggerButton, sessionPopover } = this.elements;
-    if (!sessionTriggerButton || !sessionPopover) return;
-
-    sessionTriggerButton.addEventListener("click", () => this._toggleSessionPopover());
-
-    document.addEventListener("click", (e) => {
-      if (sessionPopover.hidden) return;
-      if (sessionPopover.contains(e.target) || sessionTriggerButton.contains(e.target)) return;
-      this._closeSessionPopover();
-    }, true);
-  }
-
-  _toggleSessionPopover() {
-    if (this.elements.sessionPopover?.hidden) this._openSessionPopover();
-    else this._closeSessionPopover();
-  }
-
-  _openSessionPopover() {
-    const { sessionPopover, sessionTriggerButton, emailInput } = this.elements;
-    if (!sessionPopover) return;
-    this._positionPopover(sessionPopover, sessionTriggerButton, 260, { align: "right" });
-    sessionPopover.hidden = false;
-    sessionTriggerButton?.setAttribute("aria-expanded", "true");
-    if (!this.session) emailInput?.focus();
-  }
-
-  _closeSessionPopover() {
-    const { sessionPopover, sessionTriggerButton } = this.elements;
-    if (!sessionPopover) return;
-    sessionPopover.hidden = true;
-    sessionTriggerButton?.setAttribute("aria-expanded", "false");
   }
 
   // ─── Legend panel (bottom-right toggle) ──────────────────────────────────────
@@ -696,7 +453,7 @@ export class ViewerApp {
       this._setViewAs(entry.uid, entry.n);
     }, () => {
       this._viewAs = null;
-      this._updateEnrichAvailability();
+      this._updateIdentityAvailability();
       this._updateViewAsUI();
     });
 
@@ -724,12 +481,10 @@ export class ViewerApp {
     viewAsTriggerButton?.setAttribute("aria-expanded", "false");
   }
 
-  // Identity driving "mine"/find-home/route progress — real login wins when
-  // it matches the viewed world, else View As. Never unlocks canEnrich.
+  // Identity driving "mine"/find-home/route progress — View As is the only
+  // source now that real login is gone.
   _effectiveIdentity() {
-    if (this.canEnrich && this.session) return { uid: this.session.user.userid, name: this.session.user.username };
-    if (this._viewAs) return this._viewAs;
-    return null;
+    return this._viewAs;
   }
 
   _effectiveMyUid() {
@@ -742,7 +497,7 @@ export class ViewerApp {
     try {
       localStorage.setItem(buildViewAsKey(this.selectedWorldId), JSON.stringify(this._viewAs));
     } catch { /* best-effort — this is a convenience feature, not critical */ }
-    this._updateEnrichAvailability(); // re-derives renderer.myUserId, find-home, and the route's progress markers
+    this._updateIdentityAvailability(); // re-derives renderer.myUserId, find-home, and the route's progress markers
     this._updateViewAsUI();
   }
 
@@ -751,7 +506,7 @@ export class ViewerApp {
     this._viewAs = null;
     localStorage.removeItem(buildViewAsKey(this.selectedWorldId));
     if (this.elements.viewAsInput) this.elements.viewAsInput.value = "";
-    this._updateEnrichAvailability();
+    this._updateIdentityAvailability();
     this._updateViewAsUI();
   }
 
@@ -768,8 +523,7 @@ export class ViewerApp {
   }
 
   _updateViewAsUI() {
-    const { viewAsField, viewAsTriggerLabel, viewAsStatus, viewAsClearButton, viewAsInput } = this.elements;
-    if (viewAsField) viewAsField.hidden = this.canEnrich; // redundant once real login covers this world
+    const { viewAsTriggerLabel, viewAsStatus, viewAsClearButton, viewAsInput } = this.elements;
     if (viewAsTriggerLabel) viewAsTriggerLabel.textContent = this._viewAs ? `Viewing as: ${this._viewAs.name}` : "View as…";
     if (viewAsStatus) {
       viewAsStatus.textContent = this._viewAs
@@ -1267,620 +1021,31 @@ export class ViewerApp {
     banner.hidden = !this._readSavedRoute() || this._routeIsSaved;
   }
 
-  // ─── Activity modal (events / activity leaderboard / empire leaderboard / inactive) ──
-
-  _setupActivityModal() {
-    const {
-      activityToggleButton, activityModal, activityCloseButton,
-      activityTabEvents, activityTabActivityLb, activityTabEmpireLb, activityTabInactive,
-      activityEventsTypeOptions, activityEventsPlayerInput, activityEventsMoreButton, activityEventsList,
-      activityAlFilterInput, activityAlTable, activityAlMoreButton,
-      activityElFilterInput, activityElTable, activityElMoreButton,
-      activityInactiveDays,
-    } = this.elements;
-    if (!activityToggleButton || !activityModal) return;
-
-    activityToggleButton.addEventListener("click", () => this._openActivityModal());
-    activityCloseButton?.addEventListener("click", () => this._closeActivityModal());
-
-    activityModal.addEventListener("click", (e) => {
-      if (e.target === activityModal) this._closeActivityModal();
-    });
-
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !activityModal.hidden) this._closeActivityModal();
-    });
-
-    activityTabEvents?.addEventListener("click", () => this._switchActivityTab("events"));
-    activityTabActivityLb?.addEventListener("click", () => this._switchActivityTab("activity-leaderboard"));
-    activityTabEmpireLb?.addEventListener("click", () => this._switchActivityTab("empire-leaderboard"));
-    activityTabInactive?.addEventListener("click", () => this._switchActivityTab("inactive"));
-
-    activityEventsTypeOptions?.addEventListener("change", () => this._loadEvents({ reset: true }));
-
-    document.querySelectorAll('input[name="activity-events-scope"]')
-      .forEach((el) => el.addEventListener("change", () => this._loadEvents({ reset: true })));
-
-    // Debounced — avoid firing a request per keystroke while typing a name.
-    let playerFilterTimer = null;
-    activityEventsPlayerInput?.addEventListener("input", () => {
-      clearTimeout(playerFilterTimer);
-      playerFilterTimer = setTimeout(() => this._loadEvents({ reset: true }), 300);
-    });
-
-    activityEventsMoreButton?.addEventListener("click", () => this._loadEvents({ reset: false }));
-
-    activityEventsList?.addEventListener("click", (e) => {
-      const row = e.target.closest("[data-jump-x]");
-      if (row) this._jumpToCell(Number(row.dataset.jumpX), Number(row.dataset.jumpY), row.dataset.jumpWorld || null);
-    });
-
-    activityAlFilterInput?.addEventListener("input", () => this._renderActivityLeaderboard({ resetShown: true }));
-    activityAlTable?.querySelector("thead")?.addEventListener("click", (e) => {
-      const th = e.target.closest("th[data-sort]");
-      if (th) this._sortLeaderboard("activity", th.dataset.sort);
-    });
-    activityAlMoreButton?.addEventListener("click", () => {
-      this._activityLbShown += 50;
-      this._renderActivityLeaderboard();
-    });
-
-    activityElFilterInput?.addEventListener("input", () => this._renderEmpireLeaderboard({ resetShown: true }));
-    activityElTable?.querySelector("thead")?.addEventListener("click", (e) => {
-      const th = e.target.closest("th[data-sort]");
-      if (th) this._sortLeaderboard("empire", th.dataset.sort);
-    });
-    activityElMoreButton?.addEventListener("click", () => {
-      this._empireLbShown += 50;
-      this._renderEmpireLeaderboard();
-    });
-
-    activityInactiveDays?.addEventListener("change", () => this._loadInactivePlayers());
-  }
-
-  _openActivityModal() {
-    if (!this.elements.activityModal) return;
-    this.elements.activityModal.hidden = false;
-    this._switchActivityTab(this._activityTab, { forceReload: true });
-  }
-
-  _closeActivityModal() {
-    if (this.elements.activityModal) this.elements.activityModal.hidden = true;
-  }
-
-  _switchActivityTab(tab, { forceReload = false } = {}) {
-    const changed = tab !== this._activityTab;
-    this._activityTab = tab;
-
-    const tabs = {
-      events:              [this.elements.activityTabEvents,     this.elements.activityPanelEvents],
-      "activity-leaderboard": [this.elements.activityTabActivityLb, this.elements.activityPanelActivityLb],
-      "empire-leaderboard":   [this.elements.activityTabEmpireLb,   this.elements.activityPanelEmpireLb],
-      inactive:            [this.elements.activityTabInactive,   this.elements.activityPanelInactive],
-    };
-    for (const [key, [tabBtn, panel]] of Object.entries(tabs)) {
-      const active = key === tab;
-      tabBtn?.setAttribute("aria-selected", String(active));
-      if (panel) panel.hidden = !active;
-    }
-
-    if (!changed && !forceReload) return;
-    if (tab === "events") this._loadEvents({ reset: true });
-    else if (tab === "activity-leaderboard") this._loadActivityLeaderboard();
-    else if (tab === "empire-leaderboard") this._loadEmpireLeaderboard();
-    else if (tab === "inactive") this._loadInactivePlayers();
-  }
-
-  _setActivityStatus(elementKey, msg) {
-    if (this.elements[elementKey]) this.elements[elementKey].textContent = msg;
-  }
-
-  async _loadEvents({ reset = true } = {}) {
-    if (!this.selectedWorldId) return;
-    const { activityEventsList, activityEventsMoreButton } = this.elements;
-    if (!activityEventsList) return;
-
-    if (reset) {
-      this._eventsCursor = null;
-      this._eventsExhausted = false;
-    }
-
-    const typeCheckboxes = [...document.querySelectorAll('#activity-events-type-options input[type=checkbox]')];
-    const checkedTypes = typeCheckboxes.filter((cb) => cb.checked).map((cb) => cb.value);
-    // None or all checked means no filter. Exactly one lets the server filter directly.
-    // Anywhere in between (2+ but not all) fetches unfiltered and narrows client-side,
-    // since the API only takes a single `type` param.
-    const noFilter = checkedTypes.length === 0 || checkedTypes.length === typeCheckboxes.length;
-    const singleType = checkedTypes.length === 1 ? checkedTypes[0] : null;
-    const clientFilterTypes = !noFilter && checkedTypes.length > 1 ? new Set(checkedTypes) : null;
-    const player = this.elements.activityEventsPlayerInput?.value?.trim() || "";
-    const scope = document.querySelector('input[name="activity-events-scope"]:checked')?.value || "world";
-    const worldId = scope === "all" ? null : this.selectedWorldId;
-
-    this._setActivityStatus("activityEventsStatus", "Loading…");
-
-    try {
-      const { groups, nextBeforeId } = await this.api.getEvents(worldId, {
-        type: singleType, player, beforeId: this._eventsCursor, limit: 20,
-      });
-      const shown = clientFilterTypes ? groups.filter((g) => clientFilterTypes.has(g.event_type)) : groups;
-
-      this._eventsExhausted = nextBeforeId == null;
-      this._eventsCursor = nextBeforeId;
-
-      this._renderEventGroups(shown, { append: !reset });
-      if (activityEventsMoreButton) activityEventsMoreButton.hidden = this._eventsExhausted;
-      this._setActivityStatus("activityEventsStatus", "");
-    } catch (err) {
-      this._setActivityStatus("activityEventsStatus", err?.message || "Failed to load events.");
-    }
-  }
-
-  _renderEventGroups(groups, { append = false } = {}) {
-    const list = this.elements.activityEventsList;
-    if (!list) return;
-    if (!append) list.innerHTML = "";
-
-    if (!groups.length) {
-      if (!append && !list.children.length) list.innerHTML = `<div class="activity-list-empty">No events match these filters.</div>`;
-      return;
-    }
-
-    const scope = document.querySelector('input[name="activity-events-scope"]:checked')?.value || "world";
-    const showWorld = scope === "all";
-
-    for (const g of groups) {
-      // Single-event groups jump straight to their cell; multi-event groups are
-      // a summary row ("Player A took 5 outposts from Player B") plus an always-
-      // visible list of the individual cells, each clickable on its own — except
-      // RECYCLED, which skips the cell list: a mass-recycle can be thousands of
-      // outposts in one group, which would otherwise flood the screen with pills.
-      const clickable = g.count === 1;
-      const showCellList = !clickable && g.event_type !== "RECYCLED";
-      const row = document.createElement(clickable ? "button" : "div");
-      if (clickable) row.type = "button";
-      row.className = "activity-list-item" + (clickable ? " activity-list-item--clickable" : "");
-      const coords = g.event_type === "RELOCATED"
-        ? `(${g.old_x}, ${g.old_y}) → (${g.cells[0].x}, ${g.cells[0].y})`
-        : clickable ? `(${g.cells[0].x}, ${g.cells[0].y})` : "";
-      const worldLabel = showWorld ? escapeHtml(g.world_name || "") : "";
-      const metaLine = coords || worldLabel
-        ? `<div class="activity-list-item-meta">${[coords, worldLabel].filter(Boolean).join(" — ")}</div>`
-        : "";
-      row.innerHTML = `
-        <div class="activity-list-item-main">
-          <div class="activity-list-item-desc">${_describeEventGroup(g)}</div>
-          ${metaLine}
-        </div>
-        <div class="activity-list-item-time">${_fmtRelTime(g.detected_at)}</div>
-      `;
-      if (clickable) {
-        row.dataset.jumpX = g.cells[0].x;
-        row.dataset.jumpY = g.cells[0].y;
-        row.dataset.jumpWorld = g.world_uuid;
-      }
-      list.appendChild(row);
-
-      if (showCellList) {
-        const cellsEl = document.createElement("div");
-        cellsEl.className = "activity-event-cells";
-        cellsEl.innerHTML = g.cells
-          .map((c) => {
-            // A grouped KIT_BUILT/KIT_UPGRADED row can mix different tiers per cell — show
-            // each cell's own tier here since the group-level description can't say which.
-            const tier = c.new_tier
-              ? g.event_type === "KIT_UPGRADED" && c.old_tier
-                ? ` ${_fmtKitTier(c.old_tier)} → ${_fmtKitTier(c.new_tier)}`
-                : ` ${_fmtKitTier(c.new_tier)}`
-              : "";
-            return `<button type="button" data-jump-x="${c.x}" data-jump-y="${c.y}" data-jump-world="${g.world_uuid}">(${c.x}, ${c.y})${tier}</button>`;
-          })
-          .join("");
-        list.appendChild(cellsEl);
-      }
-    }
-  }
-
-  /** Closes the modal, switches world first if worldUuid differs (e.g. an all-worlds
-   * Events result), centers on (x, y), and selects the cell if loaded. */
-  async _jumpToCell(x, y, worldUuid = null) {
-    this._closeActivityModal();
-    if (worldUuid && worldUuid !== this.selectedWorldId) await this._selectWorld(worldUuid);
-    if (!this.renderer) return;
-    this._jumpTo(x, y);
-    const cell = this.renderer.getCellAt(x, y);
-    if (cell) {
-      this.selectedCell = cell;
-      this.renderer.selectedCell = cell;
-      this.renderer.markDirty();
-      this._renderDetails(cell);
-    }
-  }
-
-  // ─── Locate — find which world a player is currently on (searches every polled world) ──
-
-  _setupLocate() {
-    const { locateToggleButton, locatePopover, locateInput, locateSearchButton, locateResults } = this.elements;
-    if (!locateToggleButton || !locatePopover) return;
-
-    locateToggleButton.addEventListener("click", () => this._toggleLocatePopover());
-
-    document.addEventListener("click", (e) => {
-      if (locatePopover.hidden) return;
-      if (locatePopover.contains(e.target) || locateToggleButton.contains(e.target)) return;
-      this._closeLocatePopover();
-    }, true);
-
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !locatePopover.hidden) this._closeLocatePopover();
-    });
-
-    // Debounced live suggestions (min 2 chars); Find/Enter search immediately, no debounce.
-    let suggestTimer = null;
-    locateInput?.addEventListener("input", () => {
-      clearTimeout(suggestTimer);
-      const term = locateInput.value.trim();
-      if (term.length < 2) {
-        this._setLocateStatus(term.length === 0 ? "" : "Keep typing — at least 2 characters.");
-        this._renderLocateResults([]);
-        return;
-      }
-      suggestTimer = setTimeout(() => this._searchLocate(term), 250);
-    });
-
-    const searchNow = () => {
-      clearTimeout(suggestTimer);
-      const term = locateInput?.value?.trim();
-      if (term) this._searchLocate(term);
-    };
-    locateSearchButton?.addEventListener("click", searchNow);
-    locateInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") searchNow(); });
-
-    locateResults?.addEventListener("click", (e) => {
-      const btn = e.target.closest(".locate-result");
-      if (!btn) return;
-      const match = this._locateMatches?.[Number(btn.dataset.index)];
-      if (match) this._jumpToLocateResult(match);
-    });
-  }
-
-  _toggleLocatePopover() {
-    if (this.elements.locatePopover?.hidden) this._openLocatePopover();
-    else this._closeLocatePopover();
-  }
-
-  _openLocatePopover() {
-    const { locatePopover, locateToggleButton, locateInput } = this.elements;
-    if (!locatePopover) return;
-    this._positionPopover(locatePopover, locateToggleButton, 300, { align: "left" });
-    locatePopover.hidden = false;
-    locateToggleButton?.setAttribute("aria-expanded", "true");
-    locateInput?.focus();
-  }
-
-  _closeLocatePopover() {
-    const { locatePopover, locateToggleButton } = this.elements;
-    if (!locatePopover) return;
-    locatePopover.hidden = true;
-    locateToggleButton?.setAttribute("aria-expanded", "false");
-  }
-
-  _setLocateStatus(msg) {
-    if (this.elements.locateStatus) this.elements.locateStatus.textContent = msg;
-  }
-
-  /** Substring, case-insensitive name search across every world — see db.search_players(). */
-  async _searchLocate(term) {
-    const { locateStatus } = this.elements;
-    this._setLocateStatus("Searching…");
-
-    try {
-      const matches = await this.api.suggestPlayers(term, { limit: 8 });
-      this._locateMatches = matches;
-      if (!matches.length) {
-        this._setLocateStatus(`No one matching "${term}" on any polled world — either the name's wrong, or they've never had a home base on one.`);
-        this._renderLocateResults([]);
-        return;
-      }
-      this._setLocateStatus("");
-      this._renderLocateResults(matches);
-    } catch (err) {
-      this._locateMatches = [];
-      this._renderLocateResults([]);
-      this._setLocateStatus(err?.message || "Search failed.");
-    }
-  }
-
-  _renderLocateResults(matches) {
-    const list = this.elements.locateResults;
-    if (!list) return;
-    list.innerHTML = matches.map((m, i) => `
-      <button type="button" class="locate-result" data-index="${i}">
-        <span class="locate-result-name">${escapeHtml(m.name || "Unknown")}</span>
-        <span class="locate-result-world">${escapeHtml(m.world_name || m.world_uuid)}</span>
-        <span class="locate-result-coords">(${m.x}, ${m.y}) — ${_fmtNum(m.empirevalue)} empire value</span>
-      </button>
-    `).join("");
-  }
-
-  async _jumpToLocateResult(match) {
-    this._closeLocatePopover();
-    await this._selectWorld(match.world_uuid);
-    this._jumpToCell(match.x, match.y);
-  }
-
-  // ─── Activity Leaderboard — outpost gains/losses, all players ──────────────
-  // Fetched once, unpaginated; sort/filter/"View more" re-render from the cached array.
-
-  async _loadActivityLeaderboard() {
-    if (!this.selectedWorldId) return;
-    this._setActivityStatus("activityAlStatus", "Loading…");
-    try {
-      this._activityLbRows = await this.api.getActivityLeaderboard(this.selectedWorldId);
-      this._activityLbShown = 50;
-      this._renderActivityLeaderboard();
-      this._setActivityStatus("activityAlStatus", "");
-    } catch (err) {
-      this._activityLbRows = [];
-      this._setActivityStatus("activityAlStatus", err?.message || "Failed to load the activity leaderboard.");
-    }
-  }
-
-  _renderActivityLeaderboard({ resetShown = false } = {}) {
-    const tbody = this.elements.activityAlTbody;
-    if (!tbody) return;
-    if (resetShown) this._activityLbShown = 50;
-
-    const filter = this.elements.activityAlFilterInput?.value?.trim().toLowerCase() || "";
-    const filtered = filter
-      ? this._activityLbRows.filter((r) => (r.name || "").toLowerCase().includes(filter))
-      : this._activityLbRows;
-
-    const withNet = filtered.map((r) => ({
-      ...r,
-      net_day: r.gain_day - r.loss_day, net_week: r.gain_week - r.loss_week, net_month: r.gain_month - r.loss_month,
-    }));
-    const sorted = _sortRows(withNet, this._activityLbSort);
-    const shown = sorted.slice(0, this._activityLbShown);
-
-    if (!shown.length) {
-      tbody.innerHTML = `<tr><td colspan="5" class="activity-list-empty">${filter ? "No players match that filter." : "No outpost activity recorded yet."}</td></tr>`;
-    } else {
-      tbody.innerHTML = shown.map((r) => `
-        <tr>
-          <td>${escapeHtml(r.name || "Unknown")}</td>
-          <td>${_fmtNum(r.outpost_count)}</td>
-          <td>${_fmtGainLoss(r.gain_day, r.loss_day)}</td>
-          <td>${_fmtGainLoss(r.gain_week, r.loss_week)}</td>
-          <td>${_fmtGainLoss(r.gain_month, r.loss_month)}</td>
-        </tr>
-      `).join("");
-    }
-
-    this.elements.activityAlMoreButton.hidden = sorted.length <= this._activityLbShown;
-    _updateSortHeaders(this.elements.activityAlTable, this._activityLbSort);
-  }
-
-  // ─── Empire Points Leaderboard — current total value, all players ──────────
-
-  async _loadEmpireLeaderboard() {
-    if (!this.selectedWorldId) return;
-    this._setActivityStatus("activityElStatus", "Loading…");
-    try {
-      this._empireLbRows = await this.api.getEmpireLeaderboard(this.selectedWorldId);
-      this._empireLbShown = 50;
-      this._renderEmpireLeaderboard();
-      this._setActivityStatus("activityElStatus", "");
-    } catch (err) {
-      this._empireLbRows = [];
-      this._setActivityStatus("activityElStatus", err?.message || "Failed to load the empire points leaderboard.");
-    }
-  }
-
-  _renderEmpireLeaderboard({ resetShown = false } = {}) {
-    const tbody = this.elements.activityElTbody;
-    if (!tbody) return;
-    if (resetShown) this._empireLbShown = 50;
-
-    const filter = this.elements.activityElFilterInput?.value?.trim().toLowerCase() || "";
-    const filtered = filter
-      ? this._empireLbRows.filter((r) => (r.name || "").toLowerCase().includes(filter))
-      : this._empireLbRows;
-
-    const sorted = _sortRows(filtered, this._empireLbSort);
-    const shown = sorted.slice(0, this._empireLbShown);
-
-    if (!shown.length) {
-      tbody.innerHTML = `<tr><td colspan="6" class="activity-list-empty">${filter ? "No players match that filter." : "No players found on this world."}</td></tr>`;
-    } else {
-      tbody.innerHTML = shown.map((r) => `
-        <tr>
-          <td>${escapeHtml(r.name || "Unknown")}</td>
-          <td>${_fmtNum(r.total_empirevalue)}</td>
-          <td>${_fmtNum(r.total_cells)}</td>
-          <td>${_fmtSignedCls(r.delta_day)}</td>
-          <td>${_fmtSignedCls(r.delta_week)}</td>
-          <td>${_fmtSignedCls(r.delta_month)}</td>
-        </tr>
-      `).join("");
-    }
-
-    this.elements.activityElMoreButton.hidden = sorted.length <= this._empireLbShown;
-    _updateSortHeaders(this.elements.activityElTable, this._empireLbSort);
-  }
-
-  _sortLeaderboard(which, field) {
-    const state = which === "activity" ? this._activityLbSort : this._empireLbSort;
-    if (state.field === field) state.dir = state.dir === "desc" ? "asc" : "desc";
-    else { state.field = field; state.dir = "desc"; }
-    if (which === "activity") this._renderActivityLeaderboard();
-    else this._renderEmpireLeaderboard();
-  }
-
-  async _loadInactivePlayers() {
-    if (!this.selectedWorldId) return;
-    const list = this.elements.activityInactiveList;
-    if (!list) return;
-
-    const days = Math.max(1, Number(this.elements.activityInactiveDays?.value) || 7);
-    this._setActivityStatus("activityInactiveStatus", "Loading…");
-
-    try {
-      const rows = await this.api.getInactivePlayers(this.selectedWorldId, { days });
-      list.innerHTML = "";
-      if (!rows.length) {
-        list.innerHTML = `<div class="activity-list-empty">No one's gone that long without a gain — or not enough polling history yet to tell.</div>`;
-      } else {
-        for (const r of rows) {
-          const row = document.createElement("div");
-          row.className = "activity-list-item";
-          row.innerHTML = `
-            <div class="activity-list-item-main">
-              <div class="activity-list-item-desc">${escapeHtml(r.name || "Unknown")}</div>
-            </div>
-            <div class="activity-list-item-time">last gain ${_fmtRelTime(r.last_gained_at)}</div>
-          `;
-          list.appendChild(row);
-        }
-      }
-      this._setActivityStatus("activityInactiveStatus", "");
-    } catch (err) {
-      this._setActivityStatus("activityInactiveStatus", err?.message || "Failed to load inactive players.");
-    }
-  }
-
-  // ─── Session management ──────────────────────────────────────────────────────
-
-  async _handleLogin() {
-    const email    = this.elements.emailInput?.value?.trim();
-    const password = this.elements.passwordInput?.value;
-    if (!email || !password) return;
-
-    this._setLoginBusy(true);
-    this._showStatus("Signing in...");
-
-    try {
-      const apiVersion = await this.api.resolveApiVersion();
-      this.config = setViewerConfig({ ...this.config, apiVersion });
-      this.api = new ApiClient(this.config);
-
-      const session = await this.api.login(email, password);
-      await this._applySession(session);
-      this._closeSessionPopover(); // the login form did its job — get out of the way
-    } catch (err) {
-      this._setLoginBusy(false);
-      this._showStatus(err.message || "Login failed.");
-    }
-  }
-
-  async _restoreSession(token) {
-    try {
-      const apiVersion = await this.api.resolveApiVersion();
-      this.config = setViewerConfig({ ...this.config, apiVersion });
-      this.api = new ApiClient(this.config);
-
-      const session = await this.api.refresh(token);
-      await this._applySession(session);
-    } catch {
-      // not logged in, or the saved session expired — map still loads fine
-    }
-  }
-
-  async _applySession(session) {
-    this.session = session;
-    const tokenKey = buildTokenStorageKey(this.config);
-    localStorage.setItem(tokenKey, JSON.stringify({ token: session.token }));
-
-    this._setLoginBusy(false);
-    this._showStatus("");
-
-    if (!this.session.map?.worldid) await this._resolveWorldId();
-
-    this._updateSessionUI();
-    this._updateEnrichAvailability();
-
-    const myWorldId = this.session.map?.worldid;
-    if (!this._hadStoredWorldSelection && myWorldId && this.polledWorlds.some((w) => w.uuid === myWorldId)) {
-      await this._selectWorld(myWorldId);
-    }
-  }
-
-  _handleLogout() {
-    const tokenKey = buildTokenStorageKey(this.config);
-    localStorage.removeItem(tokenKey);
-
-    this.session = null;
-    this._updateEnrichAvailability();
-    this._updateSessionUI();
-
-    this.elements.logoutButton.hidden = true;
-    this.elements.loginForm.hidden = false;
-  }
-
-  _updateSessionUI() {
-    const { session } = this;
-
-    if (session) {
-      this.elements.sessionName.textContent = session.user.username || "Signed in";
-      this.elements.loginForm.hidden = true;
-      this.elements.logoutButton.hidden = false;
-      if (this.elements.sessionTriggerLabel) this.elements.sessionTriggerLabel.textContent = session.user.username || "Signed in";
-    } else {
-      this.elements.sessionName.textContent = "";
-      this.elements.loginForm.hidden = false;
-      this.elements.logoutButton.hidden = true;
-      if (this.elements.sessionTriggerLabel) this.elements.sessionTriggerLabel.textContent = "Sign in";
-    }
-
-    const worldEl = this.elements.sessionWorld;
-    if (worldEl) {
-      const myWorldId = session?.map?.worldid;
-      const myWorld = myWorldId ? this.polledWorlds.find((w) => w.uuid === myWorldId) : null;
-
-      if (!session || !myWorldId) {
-        worldEl.hidden = true;
-      } else if (myWorld) {
-        const onScreen = myWorldId === this.selectedWorldId;
-        worldEl.textContent = onScreen
-          ? `World: ${myWorld.name} (resources available)`
-          : `World: ${myWorld.name} (switch to it above to see resources)`;
-        worldEl.hidden = false;
-      } else {
-        worldEl.innerHTML = NOT_ON_MR2_MESSAGE;
-        worldEl.hidden = false;
-      }
-    }
-  }
-
-  _setLoginBusy(busy) {
-    if (this.elements.loginButton) this.elements.loginButton.disabled = busy;
-    if (this.elements.emailInput) this.elements.emailInput.disabled = busy;
-    if (this.elements.passwordInput) this.elements.passwordInput.disabled = busy;
-  }
+  // ─── Status ─────────────────────────────────────────────────────────────────
 
   _showStatus(msg) {
-    if (this.elements.sessionStatus) this.elements.sessionStatus.textContent = msg;
+    const el = this.elements.statusText;
+    if (!el) return;
+    el.textContent = msg || "";
+    el.hidden = !msg;
   }
 
-  // Gates the map toolbar on world data being loaded, not login. find-home
-  // has its own narrower gate — see _updateFindHomeAvailability().
+  // Gates the map toolbar on world data being loaded. find-home has its own
+  // narrower gate — see _updateFindHomeAvailability().
   _setMapControlsEnabled(enabled) {
     this.elements.refreshButton.disabled = !enabled;
     this.elements.searchToggleButton.disabled = !enabled;
     this.elements.searchInput.disabled = !enabled;
-    if (this.elements.pathToggleButton) this.elements.pathToggleButton.disabled = !enabled;
-    if (this.elements.activityToggleButton) this.elements.activityToggleButton.disabled = !enabled;
-    if (this.elements.locateToggleButton) this.elements.locateToggleButton.disabled = !enabled;
     this._enableFilterControls(enabled);
   }
 
-  // Only enabled when an identity (login or View As) is known — otherwise there's no "mine" cell to find.
+  // Only enabled when View As is set — otherwise there's no "mine" cell to find.
   _updateFindHomeAvailability() {
     const btn = this.elements.findHomeButton;
     if (!btn) return;
     const available = this._effectiveMyUid() != null;
     btn.disabled = !available;
-    btn.title = available ? "Jump to home base (H)" : "Log in, or set “View as”, to find your home base";
+    btn.title = available ? "Jump to home base (H)" : "Set “View as” to find your home base";
     btn.setAttribute("aria-label", btn.title);
   }
 
@@ -1956,10 +1121,8 @@ export class ViewerApp {
     this._updatePathModeVisibility("start");
     this._updatePathModeVisibility("target");
     this._clearRouteDisplay();
-    this._closeActivityModal();
 
-    this._updateEnrichAvailability();
-    this._updateSessionUI();
+    this._updateIdentityAvailability();
     this._centerOnStoredHome();
 
     try {
@@ -1969,10 +1132,9 @@ export class ViewerApp {
     this._restoreRouteForWorld();
   }
 
-  // Gates click-to-enrich; also keeps renderer.myUserId, find-home, View As
-  // visibility, and the on-screen route's progress markers in sync.
-  _updateEnrichAvailability() {
-    this.canEnrich = !!(this.session?.map?.worldid && this.session.map.worldid === this.selectedWorldId);
+  // Keeps renderer.myUserId, find-home, View As visibility, and the
+  // on-screen route's progress markers in sync with the current identity.
+  _updateIdentityAvailability() {
     const myUid = this._effectiveMyUid();
     this.renderer?.setMyUserId(myUid);
     this._updateFindHomeAvailability();
@@ -1990,20 +1152,7 @@ export class ViewerApp {
     this._worldLoadPromise = null;
   }
 
-  // /base/load is the only endpoint that returns worldid. Not cached across
-  // logins — a player can relocate, so this always resolves fresh.
-  async _resolveWorldId() {
-    const userid = this.session.user.userid;
-    try {
-      const save = await this.api.getOwnSave(this.session.token, userid);
-      const worldid = save?.worldid || "";
-      if (worldid) this.session.map = { ...this.session.map, worldid };
-    } catch (err) {
-      this._showStatus(err?.message || "Failed to resolve your world.");
-    }
-  }
-
-  // Shared by _selectWorld, refresh, and export.js — concurrent callers coalesce onto one fetch.
+  // Shared by _selectWorld and refresh — concurrent callers coalesce onto one fetch.
   _loadWorld(opts = {}) {
     if (this._worldLoadPromise) return this._worldLoadPromise;
     this._worldLoadPromise = this._doLoadWorld(opts).finally(() => {
@@ -2109,31 +1258,6 @@ export class ViewerApp {
     } catch { /* _doLoadWorld already surfaced a status message */ }
   }
 
-  // getarea backfill for a clicked cell's live fields (resources/monsters/truce/lock).
-  async _enrichSelectedCell(cell) {
-    if (!cell || !this.canEnrich || cell.uid === undefined) return; // no login for this world, or a water cell
-
-    const token   = this.session.token;
-    const request = ++this._enrichToken;
-
-    try {
-      const result = await this.api.getMapArea(token, cell.x, cell.y);
-      if (request !== this._enrichToken) return; // a later click superseded this one
-
-      const fresh = result?.data?.[cell.x]?.[cell.y];
-      if (!fresh) return;
-
-      const merged = this.renderer.normalizeCellLevel({ ...cell, ...fresh, x: cell.x, y: cell.y });
-      this.renderer.cells.set(cellKey(cell.x, cell.y), merged);
-
-      if (this.selectedCell?.x === cell.x && this.selectedCell?.y === cell.y) {
-        this.selectedCell = merged;
-        this.renderer.selectedCell = merged;
-        this._renderDetails(merged);
-      }
-    } catch { /* keep showing the bulk-derived data on failure */ }
-  }
-
   _autoFindHome() {
     const home = this.renderer?.findHomeCell();
     if (home) {
@@ -2154,15 +1278,17 @@ export class ViewerApp {
   }
 
   _storeHomePos(x, y) {
-    if (!this.session || !this.selectedWorldId) return;
-    const key = buildHomePosKey(this.session.user.userid, this.selectedWorldId);
+    const myUid = this._effectiveMyUid();
+    if (myUid == null || !this.selectedWorldId) return;
+    const key = buildHomePosKey(myUid, this.selectedWorldId);
     localStorage.setItem(key, JSON.stringify({ x, y }));
   }
 
   _centerOnStoredHome() {
     if (!this.renderer) return;
-    if (this.session && this.selectedWorldId) {
-      const key = buildHomePosKey(this.session.user.userid, this.selectedWorldId);
+    const myUid = this._effectiveMyUid();
+    if (myUid != null && this.selectedWorldId) {
+      const key = buildHomePosKey(myUid, this.selectedWorldId);
       try {
         const stored = JSON.parse(localStorage.getItem(key) || "null");
         if (stored?.x != null && stored?.y != null) {
@@ -2324,10 +1450,7 @@ export class ViewerApp {
       ${isOnline ? `<div class="detail-row detail-online"><span>Status</span><span>Online / Under attack</span></div>` : ""}
       ${isProtected ? `<div class="detail-row detail-protected"><span>Protection</span><span>Active</span></div>` : ""}
       ${truceStr ? `<div class="detail-row detail-truce"><span>Truce</span><span>${escapeHtml(truceStr)} remaining</span></div>` : ""}
-      ${!hasRes && !this.canEnrich ? LOGIN_PROMPT_HTML : ""}
     `;
-
-    content.querySelector(".detail-login-button")?.addEventListener("click", () => this._openSessionPopover());
   }
 
   _countPlayerOutposts(uid) {

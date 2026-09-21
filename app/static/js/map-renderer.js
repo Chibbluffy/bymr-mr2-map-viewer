@@ -473,7 +473,7 @@ export class MapRenderer {
 
   setFilter(filter) { this.filter = filter; this.markDirty(); }
 
-  /** Changes which uid renders as "mine" (real login or View As) — rebuilds the low-zoom
+  /** Changes which uid renders as "mine" (View As) — rebuilds the low-zoom
    * texture too, since that's a cached pixel buffer baked from the old identity. */
   setMyUserId(uid) {
     if (this.myUserId === uid) return;

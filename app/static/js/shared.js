@@ -1,4 +1,3 @@
-export const TOKEN_STORAGE_KEY = "bym-mr2-viewer-token";
 export const SESSION_CACHE_DB_NAME = "bym-mr2-viewer-session-cache";
 export const SESSION_CACHE_STORE_NAME = "entries";
 export const SESSION_CACHE_SESSION_KEY = "bym-mr2-viewer-session-id";
@@ -184,41 +183,9 @@ export function normalizeViewerConfig(config) {
   };
 }
 
-export function buildBymUrl(path, query = null, config = getViewerConfig()) {
-  const url = new URL(`${config.bymBaseUrl}${path.startsWith("/") ? path : `/${path}`}`);
-  if (query && typeof query === "object") {
-    Object.entries(query).forEach(([k, v]) => {
-      if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
-    });
-  }
-  return url.toString();
-}
-
-
-export function buildSessionPayload(loginResponse, map) {
-  const mp = map && typeof map === "object" ? map : {};
-  const worldid =
-    loginResponse?.worldid || loginResponse?.save?.worldid || loginResponse?.map?.worldid || mp.worldid || mp.worldId || "";
-  const worldName =
-    loginResponse?.worldname || loginResponse?.save?.worldname || mp.worldName || mp.worldname || "";
-  return {
-    token: loginResponse?.token || "",
-    user: {
-      userid:     loginResponse?.userid ?? loginResponse?.userId ?? null,
-      username:   loginResponse?.username || "",
-      email:      loginResponse?.email || "",
-      pic_square: loginResponse?.pic_square || "",
-    },
-    map: { ...mp, worldid, worldName },
-  };
-}
-
 export function normalizeBaseUrl(v) { return String(v || "").replace(/\/+$/, ""); }
 export function normalizeApiVersion(v) {
   return String(v || DEFAULT_VIEWER_CONFIG.apiVersion).replace(/^\/+|\/+$/g, "");
-}
-export function buildTokenStorageKey(config) {
-  return `${TOKEN_STORAGE_KEY}:${normalizeBaseUrl(config?.bymBaseUrl || DEFAULT_VIEWER_CONFIG.bymBaseUrl)}`;
 }
 
 export function parseJsonPayload(rawBody) {

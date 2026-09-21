@@ -125,6 +125,15 @@ body {
 
 .top-bar-spacer { flex: 1; }
 
+.top-bar-status {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.top-bar-status[hidden] { display: none !important; }
+
 /* ── Panel base ───────────────────────────────────────────────────────────── */
 
 .panel {
@@ -207,9 +216,11 @@ button { cursor: pointer; }
 .icon-button:hover { background: var(--panel-strong); border-color: var(--accent); }
 .icon-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ── Session trigger + popover ────────────────────────────────────────────── */
+/* .icon-button's own display:grid would otherwise beat the UA [hidden] style —
+   the Path tool's entry point is hidden this way while the feature itself stays intact. */
+.icon-button[hidden] { display: none !important; }
 
-.top-bar-session { position: relative; }
+/* ── Trigger button + popover (View As) ───────────────────────────────────── */
 
 .session-trigger-button {
   display: flex;
@@ -228,13 +239,6 @@ button { cursor: pointer; }
 
 .session-trigger-button:hover { background: var(--panel-strong); border-color: var(--accent); }
 
-.session-trigger-caret {
-  width: 14px;
-  height: 14px;
-  fill: currentColor;
-  transition: transform 0.15s;
-}
-
 .session-trigger-button[aria-expanded="true"] .session-trigger-caret { transform: rotate(180deg); }
 
 .session-popover {
@@ -246,39 +250,6 @@ button { cursor: pointer; }
   z-index: 90;
 }
 .session-popover[hidden] { display: none !important; }
-
-.session-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.login-form { display: flex; flex-direction: column; gap: 8px; }
-.login-form[hidden] { display: none !important; }
-
-.login-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.login-form input {
-  background: rgba(0, 0, 0, 0.4);
-  color: var(--text);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  padding: 7px 10px;
-  font-size: 0.85rem;
-  width: 100%;
-}
-
-.login-form input:focus { outline: 1px solid var(--accent); }
-
-.session-world { margin: 0 0 4px; font-size: 0.78rem; }
 
 /* ── "View as" — client-only identity, no login ───────────────────────────── */
 
@@ -298,51 +269,6 @@ button { cursor: pointer; }
 .view-as-popover[hidden] { display: none !important; }
 
 .view-as-help { font-size: 0.72rem; line-height: 1.4; }
-
-/* ── Locate — cross-world player search ────────────────────────────────────── */
-
-.top-bar-locate { position: relative; }
-
-.locate-popover {
-  /* Portaled + position:fixed, positioned via JS — see .session-popover above. */
-  position: fixed;
-  max-width: calc(100vw - 24px);
-  z-index: 90;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.locate-popover[hidden] { display: none !important; }
-
-.locate-help { font-size: 0.72rem; line-height: 1.4; }
-
-.locate-search-row { display: flex; gap: 6px; }
-/* .primary-button's own width:100% would otherwise become its flex-basis here,
-   squeezing the input down to almost nothing — pin both explicitly. */
-.locate-search-row .search-input { flex: 1 1 auto; min-width: 0; }
-.locate-search-row .primary-button { flex: 0 0 auto; width: auto; margin-top: 0; }
-
-.locate-results { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
-
-.locate-result {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  color: var(--text);
-  font-size: 0.8rem;
-  text-align: left;
-  cursor: pointer;
-}
-.locate-result:hover { background: rgba(255, 255, 255, 0.09); }
-.locate-result .locate-result-name { font-weight: 600; }
-.locate-result .locate-result-world { color: var(--muted); font-size: 0.75rem; }
-.locate-result .locate-result-coords { color: var(--muted); font-size: 0.75rem; }
 
 /* ── Cell detail panel — floating, top-left; click pins it, hover previews ── */
 
@@ -392,19 +318,6 @@ button { cursor: pointer; }
 
 .details-content { font-size: 0.78rem; color: var(--text); }
 
-.detail-login-prompt {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.detail-login-prompt-text {
-  font-size: 0.74rem;
-  color: var(--muted);
-  line-height: 1.4;
-  margin: 0 0 8px;
-}
-
 .detail-row {
   display: flex;
   justify-content: space-between;
@@ -433,7 +346,6 @@ button { cursor: pointer; }
 .detail-online   span:last-child { color: #ff9050; }
 .detail-protected span:last-child { color: #60d0a0; }
 .detail-truce    span:last-child { color: #80c0ff; }
-
 
 /* ── Legend ───────────────────────────────────────────────────────────────── */
 /* Floating flyout, toggled by #legend-toggle-button in .map-controls — hidden
@@ -1058,10 +970,6 @@ button { cursor: pointer; }
   display: flex;
   gap: 0;
 }
-/* Export group defaults to [hidden] in the shared index.html (see app.js) —
-   the flex display above otherwise wins over the UA [hidden] style. */
-#export-button-group[hidden] { display: none !important; }
-
 .map-control-group > *:first-child {
   border-radius: 10px 0 0 10px;
 }
@@ -1113,263 +1021,3 @@ button { cursor: pointer; }
   flex-shrink: 0;
 }
 
-/* ── Modal base (currently just the Activity modal) ──────────────────────── */
-
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(4, 8, 4, 0.78);
-  display: grid;
-  place-items: center;
-  z-index: 50;
-  backdrop-filter: blur(3px);
-}
-
-.modal-overlay[hidden] { display: none; }
-
-.modal-panel { width: min(380px, 90vw); }
-
-/* Export button sits alone in its own .map-control-group — the shared group
-   rules assume two buttons and split the rounding/border between them. */
-#export-button {
-  border-radius: 10px;
-  border-left: 1px solid var(--panel-border);
-}
-
-.export-button-group { position: relative; }
-
-.export-resource-warning {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  width: 220px;
-  margin: 0;
-  padding: 8px 10px;
-  background: rgba(28, 18, 4, 0.95);
-  border: 1px solid rgba(255, 176, 80, 0.4);
-  border-radius: 8px;
-  color: #ffcf8a;
-  font-size: 0.72rem;
-  line-height: 1.4;
-  z-index: 10;
-}
-.export-resource-warning[hidden] { display: none !important; }
-
-/* ── Activity modal — events / leaderboard / inactive players ────────────── */
-
-.top-bar-icon-button { width: 32px; height: 32px; }
-
-.modal-panel.activity-modal-panel {
-  width: min(640px, 92vw);
-  max-height: 82vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.activity-modal-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 12px;
-  flex-shrink: 0;
-}
-
-.activity-modal-header h2 { margin: 0; }
-
-.activity-tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--panel-border);
-  margin-bottom: 12px;
-  flex-shrink: 0;
-}
-
-.activity-tab {
-  padding: 8px 14px;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  border-bottom: 2px solid transparent;
-  font-size: 0.85rem;
-  font-weight: 600;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.activity-tab:hover { color: var(--text); }
-
-.activity-tab[aria-selected="true"] {
-  color: var(--accent-strong);
-  border-bottom-color: var(--accent);
-}
-
-.activity-panel {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  flex: 1;
-}
-.activity-panel[hidden] { display: none !important; }
-
-.activity-events-scope {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 10px;
-  flex-shrink: 0;
-}
-
-.activity-filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  flex-shrink: 0;
-}
-
-.activity-filters .search-input { flex: 1; min-width: 160px; }
-
-.activity-days-field { width: 160px; }
-
-.activity-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--panel-strong) transparent;
-}
-.activity-list::-webkit-scrollbar { width: 4px; }
-.activity-list::-webkit-scrollbar-track { background: transparent; }
-.activity-list::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
-
-.activity-list-item {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 6px;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  color: var(--text);
-  font-size: 0.82rem;
-  text-align: left;
-  transition: background 0.12s;
-}
-
-.activity-list-item--clickable { cursor: pointer; }
-.activity-list-item--clickable:hover { background: var(--panel-strong); }
-
-.activity-list-item-main { flex: 1; min-width: 0; }
-
-.activity-list-item-desc { color: var(--text); }
-
-.activity-list-item-meta {
-  color: var(--muted);
-  font-size: 0.72rem;
-  margin-top: 2px;
-}
-
-.activity-list-item-time {
-  color: var(--muted);
-  font-size: 0.72rem;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.activity-list-item-gain-positive { color: #60d080; }
-.activity-list-item-gain-negative { color: #e06050; }
-
-.activity-list-empty {
-  color: var(--muted);
-  font-size: 0.82rem;
-  padding: 16px 6px;
-  text-align: center;
-}
-
-.activity-more-button { margin-top: 8px; flex-shrink: 0; }
-.activity-more-button[hidden] { display: none !important; }
-
-.activity-status { flex-shrink: 0; margin-top: 6px; }
-.activity-status:empty { display: none; }
-
-.activity-events-hint, .activity-table-hint {
-  color: var(--muted);
-  font-size: 0.72rem;
-  line-height: 1.4;
-  margin: 0 0 8px;
-  flex-shrink: 0;
-}
-
-/* Grouped event rows — always-visible list of individual cells, each its own jump target */
-.activity-event-cells {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 0 6px 10px;
-  font-size: 0.72rem;
-  color: var(--muted);
-}
-.activity-event-cells button {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--panel-border);
-  border-radius: 6px;
-  color: var(--text);
-  padding: 2px 6px;
-  font-size: 0.72rem;
-  cursor: pointer;
-}
-.activity-event-cells button:hover { background: var(--panel-strong); }
-
-/* Sortable leaderboard tables */
-.activity-table-wrap {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--panel-strong) transparent;
-}
-.activity-table-wrap::-webkit-scrollbar { width: 4px; height: 4px; }
-.activity-table-wrap::-webkit-scrollbar-track { background: transparent; }
-.activity-table-wrap::-webkit-scrollbar-thumb { background: var(--panel-strong); border-radius: 2px; }
-
-.activity-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8rem;
-}
-
-.activity-table th {
-  position: sticky;
-  top: 0;
-  background: var(--panel);
-  color: var(--muted);
-  text-align: right;
-  font-weight: 600;
-  padding: 6px 10px;
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-  border-bottom: 1px solid var(--panel-border);
-}
-.activity-table th:first-child { text-align: left; }
-.activity-table th:hover { color: var(--text); }
-.activity-table th[data-sort-active]::after { content: " " attr(data-sort-dir); }
-
-.activity-table td {
-  text-align: right;
-  padding: 6px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  white-space: nowrap;
-}
-.activity-table td:first-child { text-align: left; }
-
-.activity-table tr:hover td { background: rgba(255, 255, 255, 0.03); }
-
-.activity-gain { color: #60d080; }
-.activity-loss { color: #e06050; }

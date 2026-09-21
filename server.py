@@ -12,18 +12,10 @@ import json
 from functools import partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
 import db
 from config import HOST, PORT, STATIC_DIR
-
-PERIOD_SECONDS = {"day": 86400, "week": 7 * 86400, "month": 30 * 86400}
-
-# The export page reuses index.html; app.js detects the URL at runtime and
-# reveals its export-specific UI. Relative asset requests still resolve
-# against /tnb/export/, only the HTML bytes served are swapped.
-EXPORT_URL_PATHS = {"/tnb/export", "/tnb/export/", "/tnb/export/index.html"}
 
 
 class ViewerHandler(SimpleHTTPRequestHandler):
@@ -35,11 +27,6 @@ class ViewerHandler(SimpleHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         print(f"{self.address_string()} - {format % args}")
-
-    def translate_path(self, path: str) -> str:
-        if urlsplit(path).path in EXPORT_URL_PATHS:
-            return str(Path(self.directory) / "index.html")
-        return super().translate_path(path)
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
@@ -61,27 +48,6 @@ class ViewerHandler(SimpleHTTPRequestHandler):
                 self._route_terrain(world)
             elif path == "/api/snapshot":
                 self._json(self._route_snapshot(world))
-            elif path == "/api/leaderboard/activity":
-                self._json(self._route_activity_leaderboard(world))
-            elif path == "/api/leaderboard/empire":
-                self._json(self._route_empire_leaderboard(world))
-            elif path == "/api/events":
-                event_type = (query.get("type") or [None])[0]
-                player = (query.get("player") or [None])[0]
-                before_id_raw = (query.get("before_id") or [None])[0]
-                before_id = int(before_id_raw) if before_id_raw else None
-                limit = int((query.get("limit") or ["20"])[0])
-                self._json(self._route_events(world, event_type, player, before_id, limit))
-            elif path == "/api/inactive":
-                days = int((query.get("days") or ["7"])[0])
-                self._json(self._route_inactive(world, days))
-            elif path == "/api/locate":
-                name = (query.get("name") or [None])[0]
-                self._json(self._route_locate(name))
-            elif path == "/api/locate/suggest":
-                term = (query.get("term") or [None])[0]
-                limit = int((query.get("limit") or ["8"])[0])
-                self._json(self._route_locate_suggest(term, limit))
             else:
                 self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except ApiError as e:
@@ -134,49 +100,6 @@ class ViewerHandler(SimpleHTTPRequestHandler):
             "players": players,
             "cells": cells,
         }
-
-    def _period_cutoffs(self) -> tuple[int, int, int]:
-        now = db.now()
-        return now - PERIOD_SECONDS["day"], now - PERIOD_SECONDS["week"], now - PERIOD_SECONDS["month"]
-
-    def _route_activity_leaderboard(self, world: str | None) -> list[dict]:
-        world = _require_world(world)
-        day, week, month = self._period_cutoffs()
-        with db.session() as conn:
-            return db.activity_leaderboard(conn, world, day, week, month)
-
-    def _route_empire_leaderboard(self, world: str | None) -> list[dict]:
-        world = _require_world(world)
-        day, week, month = self._period_cutoffs()
-        with db.session() as conn:
-            return db.empire_leaderboard(conn, world, day, week, month)
-
-    def _route_events(self, world: str | None, event_type: str | None, player: str | None,
-                       before_id: int | None, limit: int) -> dict:
-        # world is optional here (unlike every other route) — omitted or blank means every polled world at once.
-        with db.session() as conn:
-            groups, next_before_id = db.list_events_grouped(conn, world or None, event_type, player, before_id, limit)
-        return {"groups": groups, "next_before_id": next_before_id}
-
-    def _route_inactive(self, world: str | None, days: int) -> list[dict]:
-        world = _require_world(world)
-        before = db.now() - days * 86400
-        with db.session() as conn:
-            return [dict(row) for row in db.inactive_players(conn, world, before)]
-
-    def _route_locate(self, name: str | None) -> list[dict]:
-        """World-independent: which currently-polled world(s) a player's home base is in right now."""
-        if not name:
-            raise ApiError("Missing name query param", HTTPStatus.BAD_REQUEST)
-        with db.session() as conn:
-            return [dict(row) for row in db.find_player_home(conn, name)]
-
-    def _route_locate_suggest(self, term: str | None, limit: int) -> list[dict]:
-        """As-you-type suggestions backing Locate's dropdown. See db.search_players()."""
-        if not term:
-            raise ApiError("Missing term query param", HTTPStatus.BAD_REQUEST)
-        with db.session() as conn:
-            return [dict(row) for row in db.search_players(conn, term, limit)]
 
     # ─── Response helper ────────────────────────────────────────────────────
 
