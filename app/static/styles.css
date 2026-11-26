@@ -216,8 +216,13 @@ button { cursor: pointer; }
 .icon-button:hover { background: var(--panel-strong); border-color: var(--accent); }
 .icon-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* .icon-button's own display:grid would otherwise beat the UA [hidden] style —
-   the Path tool's entry point is hidden this way while the feature itself stays intact. */
+.icon-button--active {
+  background: var(--panel-strong);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* .icon-button's own display:grid would otherwise beat the UA [hidden] style. */
 .icon-button[hidden] { display: none !important; }
 
 /* ── Trigger button + popover (View As) ───────────────────────────────────── */
@@ -298,6 +303,53 @@ button { cursor: pointer; }
 
 .cell-detail-header h2 { margin: 0; }
 
+.cell-detail-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0; /* lets the h2 ellipsis-truncate instead of forcing the panel wider */
+}
+
+.cell-detail-heading h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.details-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 2px solid var(--panel-border);
+}
+
+.details-avatar[hidden] { display: none; }
+.details-avatar { cursor: zoom-in; }
+
+/* ── Avatar lightbox ──────────────────────────────────────────────────────── */
+
+.avatar-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: grid;
+  place-items: center;
+  z-index: 200;
+  cursor: zoom-out;
+  padding: 24px;
+}
+
+.avatar-lightbox[hidden] { display: none; }
+
+.avatar-lightbox img {
+  max-width: min(80vw, 480px);
+  max-height: 80vh;
+  border-radius: 12px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
+
 .cell-detail-close {
   display: grid;
   place-items: center;
@@ -328,6 +380,23 @@ button { cursor: pointer; }
 
 .detail-row span:first-child { color: var(--muted); flex-shrink: 0; }
 .detail-row span:last-child  { text-align: right; word-break: break-word; }
+
+.detail-player-name {
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.detail-player-name:hover { color: var(--accent-strong); }
+
+.detail-action-row { justify-content: flex-start; }
+
+.detail-go-home-link {
+  cursor: pointer;
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.detail-go-home-link:hover { color: #fff; }
 
 .detail-divider {
   font-size: 0.68rem;
@@ -408,20 +477,23 @@ button { cursor: pointer; }
 /* Terrain */
 .swatch-water  { background: #1a3480; }
 
-/* Occupant overlays */
-.swatch-mine-home  { background: rgba(0,   232, 255, 0.90); }  /* mine  — home   — vivid cyan    */
-.swatch-mine-out   { background: rgba(0,   170, 230, 0.60); }  /* mine  — outpost — softer cyan  */
-.swatch-other-home { background: rgba(255, 210,  30, 0.90); }  /* other — home   — golden yellow */
-.swatch-other-out  { background: rgba(255, 130,   0, 0.65); }  /* other — outpost — orange       */
-.swatch-wm         { background: rgba(200, 200, 200, 0.55); }  /* wild tribe — light gray tint   */
+/* Occupant overlays — matches map-renderer.js's REL_RGB exactly (the original game
+   client's AllyInfo.as playerHex/allyHex/friendlyHex/hostileHex/neutralHex/noneHex) */
+.swatch-self     { background: rgba(0,   255, 255, 0.98); }  /* pure cyan, near-opaque — was playerHex 0x3887e7, see map-renderer.js's REL_RGB */
+.swatch-ally     { background: rgba(172, 215, 249, 0.90); }  /* allyHex     0xacd7f9 */
+.swatch-friendly { background: rgba(19,  221, 5,   0.90); }  /* friendlyHex 0x13dd05 */
+.swatch-hostile  { background: rgba(255, 70,  40,  0.90); }  /* hostileHex  0xff4628 */
+.swatch-neutral  { background: rgba(255, 255, 0,   0.90); }  /* neutralHex  0xffff00 */
+.swatch-none     { background: rgba(255, 255, 255, 0.90); }  /* noneHex     0xffffff */
+.swatch-wm       { background: rgba(200, 200, 200, 0.55); }  /* wild tribe — light gray tint */
 
 /* Filter */
 .swatch-filter { background: rgba(255, 50, 200, 0.85); }
 .swatch-dim    { background: rgba(0, 0, 0, 0.55); border: 1px solid rgba(255,255,255,0.1); }
 
 /* Path tool */
-.swatch-route         { background: #39ff6a; }
-.swatch-route-blocked { background: #ff4444; }
+.swatch-route         { background: #a855f7; }
+.swatch-route-blocked { background: #ff4628; }  /* same red as .swatch-hostile */
 
 /* ── Map toolbar — search and filter ─────────────────────────────────────── */
 
@@ -743,8 +815,39 @@ button { cursor: pointer; }
 }
 
 .filter-player-chip-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.filter-player-chip-name:hover,
+.filter-player-chip-name:focus-visible {
+  background: rgba(92, 184, 72, 0.22);
+  outline: none;
+}
+
+.filter-player-chip-swatch {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+/* Triggered via nameEl.click() in viewer-app.js — kept in the DOM (not display:none)
+   so the native color picker can still be opened programmatically. */
+.filter-player-chip-color-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: none;
+  padding: 0;
+  pointer-events: none;
 }
 
 .filter-player-chip-remove {

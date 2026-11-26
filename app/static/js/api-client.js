@@ -31,6 +31,14 @@ export class ApiClient {
     return { snapshot: payload };
   }
 
+  /** This world's alliances (members + relationships), via server.py's own SQLite-backed copy. Returns { alliances }. */
+  async getAlliances(worldid) {
+    const response = await fetch(`/api/alliances?world=${encodeURIComponent(worldid)}`);
+    const payload = parseJsonPayload(await response.text());
+    if (!response.ok) throw new Error(extractErrorMessage(payload) || response.statusText || "Request failed");
+    return { alliances: payload };
+  }
+
   /** Worlds server.py has polled — drives the world picker. Returns {uuid, name, map_version, player_count, last_polled_at}[]. */
   async getPolledWorlds() {
     const response = await fetch("/api/worlds");

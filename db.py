@@ -2,12 +2,14 @@
 
 `worlds` / `terrain` / `cells` — latest known state, overwritten each poll.
 No history is kept — just the current occupied-cell snapshot per world,
-which is all the map view, search, filters, and the (currently hidden)
-Path tool need.
+which is all the map view, search, filters, and the Path tool need.
+`alliances` is global (one getAlliances call covers every MR2 world), also
+overwritten whole each poll — it's what drives the map's relationship colors.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -57,6 +59,19 @@ CREATE TABLE IF NOT EXISTS cells (
   PRIMARY KEY (world_uuid, x, y)
 );
 CREATE INDEX IF NOT EXISTS idx_cells_world_uid ON cells(world_uuid, uid);
+
+-- One row per MR2 alliance, across every world — drives the map's relationship
+-- colors (self/ally/friendly/hostile/neutral/none), mirroring the original game
+-- client's AllyInfo.as. Overwritten whole each poll, like cells.
+CREATE TABLE IF NOT EXISTS alliances (
+  alliance_id   INTEGER PRIMARY KEY,
+  world_uuid    TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  members       TEXT NOT NULL,  -- JSON array of member uids
+  relationships TEXT NOT NULL,  -- JSON object {targetAllianceId: -1 hostile | 1 friendly}, absent = neutral
+  updated_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alliances_world ON alliances(world_uuid);
 """
 
 
@@ -155,5 +170,30 @@ def replace_cells(conn: sqlite3.Connection, world_uuid: str, cells: list[dict]) 
                 c["empirevalue"], c["flinger"], c["catapult"], c["damage"], c["protected"], c["destroyed"], ts,
             )
             for c in cells
+        ],
+    )
+
+
+# ─── Alliances ──────────────────────────────────────────────────────────────
+
+def get_alliances_for_world(conn: sqlite3.Connection, world_uuid: str) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM alliances WHERE world_uuid = ?", (world_uuid,)).fetchall()
+
+
+def replace_alliances(conn: sqlite3.Connection, alliances: list[dict]) -> None:
+    """Overwrites the whole table — one getAlliances call already covers every MR2 world."""
+    ts = now()
+    conn.execute("DELETE FROM alliances")
+    conn.executemany(
+        """
+        INSERT INTO alliances (alliance_id, world_uuid, name, members, relationships, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                a["alliance_id"], a["world_uuid"], a["name"],
+                json.dumps(a["members"]), json.dumps(a["relationships"]), ts,
+            )
+            for a in alliances
         ],
     )

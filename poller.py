@@ -2,12 +2,15 @@
 
 Runs forever: every POLL_INTERVAL_SECONDS, fetches the world list, then for
 each MR2 world fetches its snapshot (and terrain, once ever) and overwrites
-the stored cell state. No history is tracked — just the current snapshot.
+the stored cell state, then fetches every MR2 alliance (one call, covers all
+worlds) and overwrites that table too. No history is tracked — just the
+current snapshot.
 
-Auth is an API key (X-API-Key), not a player login — see config.py. Rate
-limit is 10 req/min per endpoint per key, shared across every world; at a
-10-minute interval that's a 100-request budget per cycle (2 requests per
-world per cycle: snapshot always, terrain only until cached).
+Auth is an API key (X-API-Key), not a player login — see config.py. Each of
+terrain/snapshot/alliances is its own 10 req/min budget per key; at a
+10-minute interval that's at most 2 requests per world per cycle (snapshot
+always, terrain only until cached) plus one alliances call for the whole
+poll, nowhere close to any of the three limits.
 """
 
 from __future__ import annotations
@@ -72,6 +75,26 @@ def fetch_snapshot(world_uuid: str) -> dict:
     return json.loads(raw)
 
 
+def fetch_alliances() -> dict:
+    """One call covers every MR2 alliance across every world — no worldid param."""
+    raw, _ = _fetch("/worldmapv2/alliances", "")
+    return json.loads(raw)
+
+
+def alliances_to_rows(payload: dict) -> list[dict]:
+    """Turns {"alliances": {"<id>": {world, name, members, relationships, ...}}} into db.py row dicts."""
+    rows = []
+    for alliance_id, a in payload.get("alliances", {}).items():
+        rows.append({
+            "alliance_id": int(alliance_id),
+            "world_uuid": a["world"],
+            "name": a["name"],
+            "members": a.get("members", []),
+            "relationships": a.get("relationships", {}),
+        })
+    return rows
+
+
 def snapshot_to_cells(snapshot: dict) -> list[dict]:
     """Turns the snapshot's positional cell arrays into named dicts, with owner name resolved from the players sidecar."""
     players = snapshot.get("players", {})
@@ -129,6 +152,16 @@ def poll_once(conn) -> None:
             log(f"  {world.get('name', world.get('uuid'))}: unexpected error, skipping")
             traceback.print_exc()
             conn.rollback()  # discard this world's partial writes only
+
+    try:
+        rows = alliances_to_rows(fetch_alliances())
+        db.replace_alliances(conn, rows)
+        conn.commit()
+        log(f"  Alliances: {len(rows)} across all MR2 worlds")
+    except Exception:
+        log("  Alliances: fetch failed, skipping this cycle")
+        traceback.print_exc()
+        conn.rollback()
 
 
 def maybe_vacuum(conn: sqlite3.Connection) -> None:

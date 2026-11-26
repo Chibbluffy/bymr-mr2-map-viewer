@@ -4,6 +4,7 @@ export const SESSION_CACHE_SESSION_KEY = "bym-mr2-viewer-session-id";
 export const WORLD_CACHE_VERSION = 1;
 export const TERRAIN_CACHE_KEY_PREFIX  = "bym-mr2-viewer-terrain";
 export const SNAPSHOT_CACHE_KEY_PREFIX = "bym-mr2-viewer-snapshot";
+export const ALLIANCE_CACHE_KEY_PREFIX = "bym-mr2-viewer-alliances";
 export const HOME_POS_STORAGE_KEY_PREFIX    = "bym-mr2-viewer-home-pos";
 export const SELECTED_WORLD_STORAGE_KEY     = "bym-mr2-viewer-selected-world";
 export const ROUTE_STORAGE_KEY_PREFIX       = "bym-mr2-viewer-route";
@@ -278,6 +279,10 @@ export function buildTerrainCacheKey(worldId) {
 
 export function buildSnapshotCacheKey(worldId) {
   return `${SNAPSHOT_CACHE_KEY_PREFIX}:v${WORLD_CACHE_VERSION}:${worldId}`;
+}
+
+export function buildAllianceCacheKey(worldId) {
+  return `${ALLIANCE_CACHE_KEY_PREFIX}:v${WORLD_CACHE_VERSION}:${worldId}`;
 }
 
 export function buildHomePosKey(userId, worldId) {

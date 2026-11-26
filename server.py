@@ -48,6 +48,8 @@ class ViewerHandler(SimpleHTTPRequestHandler):
                 self._route_terrain(world)
             elif path == "/api/snapshot":
                 self._json(self._route_snapshot(world))
+            elif path == "/api/alliances":
+                self._json(self._route_alliances(world))
             else:
                 self._json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except ApiError as e:
@@ -99,6 +101,19 @@ class ViewerHandler(SimpleHTTPRequestHandler):
             "generatedAt": world_row["last_polled_at"],
             "players": players,
             "cells": cells,
+        }
+
+    def _route_alliances(self, world: str | None) -> dict:
+        world = _require_world(world)
+        with db.session() as conn:
+            rows = db.get_alliances_for_world(conn, world)
+        return {
+            str(row["alliance_id"]): {
+                "name": row["name"],
+                "members": json.loads(row["members"]),
+                "relationships": json.loads(row["relationships"]),
+            }
+            for row in rows
         }
 
     # ─── Response helper ────────────────────────────────────────────────────

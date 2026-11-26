@@ -7,6 +7,7 @@ import {
   SEARCH_RESULT_LIMIT,
   buildTerrainCacheKey,
   buildSnapshotCacheKey,
+  buildAllianceCacheKey,
   buildHomePosKey,
   buildRouteStorageKey,
   buildViewAsKey,
@@ -20,6 +21,33 @@ import {
 import { findRoute, wrappedHexDistance, BALANCED_HOP_PENALTY } from "./route.js";
 
 const NO_WORLDS_MESSAGE = "No worlds have been polled yet — check back in a few minutes.";
+
+// Per-player filter highlight colors — remembered across visits (see _loadFilterColors()),
+// keyed by uid so the same rival/ally gets the same color next time they're filtered.
+// Everyone starts out this same pink (same hue as the generic filter-match highlight
+// elsewhere in the app) rather than an auto-cycled palette — picking a color that might
+// collide with something else's meaning (the alliance yellow, say) is the player's call
+// to make deliberately, not something silently assigned for them.
+const FILTER_COLOR_STORAGE_KEY = "mr2FilterPlayerColors";
+const DEFAULT_FILTER_COLOR = "#ff32c8";
+
+function _loadFilterColors() {
+  try {
+    const raw = localStorage.getItem(FILTER_COLOR_STORAGE_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    return new Map(Object.entries(obj).map(([uid, color]) => [Number(uid), color]));
+  } catch {
+    return new Map();
+  }
+}
+
+function _saveFilterColors(colors) {
+  try {
+    localStorage.setItem(FILTER_COLOR_STORAGE_KEY, JSON.stringify(Object.fromEntries(colors)));
+  } catch {
+    // Storage unavailable (private browsing, quota, etc.) — colors just won't persist.
+  }
+}
 
 // Guards the global keyboard shortcuts (+/-/H/Escape) so they don't fire while typing.
 function _isTypingInField() {
@@ -137,6 +165,7 @@ export class ViewerApp {
     this.searchActiveIndex = -1;
     this.filterOpen = false;
     this._filterPlayers = new Map();  // uid → name; drives multi-player highlight
+    this._filterPlayerColors = _loadFilterColors(); // uid → hex color; persisted across visits
 
     // ── World picker state ─────────────────────────────────────────────────
     this.polledWorlds = [];      // [{uuid, name, map_version, player_count, last_polled_at}, ...] from /api/worlds
@@ -152,8 +181,9 @@ export class ViewerApp {
     // ── "View as" — client-only identity; the only identity mechanism now
     // that real login is gone ───────────────────────────────────────────────
     this._viewAs = null; // {uid, name} | null
+    this._allianceData = null; // { uidToAllianceId, alliancesById } | null — see _buildAllianceData()
 
-    // ── Path tool (route planner) — UI entry point hidden for now, kept intact ──
+    // ── Path tool (route planner) ──────────────────────────────────────────
     this._pathStartPick  = null;
     this._pathTargetPick = null;
     this.currentRoute     = null; // { route, originalOwners, options, startName, targetName } | null
@@ -165,7 +195,10 @@ export class ViewerApp {
       statusText:         document.getElementById("status-text"),
       detailPanel:        document.getElementById("cell-detail-panel"),
       detailsTitle:       document.getElementById("details-title"),
+      detailsAvatar:      document.getElementById("details-avatar"),
       detailsContent:     document.getElementById("details-content"),
+      avatarLightbox:     document.getElementById("avatar-lightbox"),
+      avatarLightboxImg:  document.getElementById("avatar-lightbox-img"),
       detailsCloseButton: document.getElementById("details-close-button"),
       legendToggleButton: document.getElementById("legend-toggle-button"),
       legendPanel:        document.getElementById("legend-panel"),
@@ -189,6 +222,9 @@ export class ViewerApp {
       filterPlayerResults:  document.getElementById("filter-player-results"),
       filterClearButton:    document.getElementById("filter-clear-button"),
       filterMatchCount:     document.getElementById("filter-match-count"),
+
+      measureToggleButton: document.getElementById("measure-toggle-button"),
+      measureClearButton:  document.getElementById("measure-clear-button"),
 
       viewAsTriggerButton:  document.getElementById("view-as-trigger-button"),
       viewAsTriggerLabel:   document.getElementById("view-as-trigger-label"),
@@ -341,6 +377,8 @@ export class ViewerApp {
     this._setupLegendPanel();
     this._setupViewAs();
     this._setupPathPanel();
+    this._setupMeasureTool();
+    this._setupAvatarLightbox();
 
     // Re-clamp the View As popover if it's open on resize/orientation change —
     // its position is computed once at open time, not tracked continuously.
@@ -351,6 +389,25 @@ export class ViewerApp {
 
     this.elements.detailsCloseButton?.addEventListener("click", () => this._deselectCell());
 
+    // Delegated — content.innerHTML is rebuilt on every _renderDetails() call, so a
+    // listener on the element itself wouldn't survive the next hover/click.
+    const handleDetailsAction = (target) => {
+      const nameEl = target.closest(".detail-player-name");
+      if (nameEl) {
+        this._addPlayerToFilter(Number(nameEl.dataset.uid) || null, nameEl.dataset.name);
+        return;
+      }
+      const homeLink = target.closest(".detail-go-home-link");
+      if (homeLink) this._jumpTo(Number(homeLink.dataset.x), Number(homeLink.dataset.y));
+    };
+    this.elements.detailsContent?.addEventListener("click", (e) => handleDetailsAction(e.target));
+    this.elements.detailsContent?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (!e.target.closest(".detail-player-name, .detail-go-home-link")) return;
+      e.preventDefault();
+      handleDetailsAction(e.target);
+    });
+
     // Keyboard shortcuts — ignored while typing (_isTypingInField()).
     document.addEventListener("keydown", (e) => {
       if (_isTypingInField()) return;
@@ -360,7 +417,18 @@ export class ViewerApp {
         const home = this.renderer?.findHomeCell();
         if (home) this._jumpTo(home.x, home.y);
       }
-      if (e.key === "Escape") this._deselectCell();
+      if (e.key === "m" || e.key === "M") this._toggleMeasureMode();
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (this.renderer?.measurements?.length) { e.preventDefault(); this.renderer.clearMeasurements(); }
+      }
+      if (e.key === "Escape") {
+        if (this.elements.avatarLightbox && !this.elements.avatarLightbox.hidden) {
+          this._closeAvatarLightbox();
+          return;
+        }
+        this._deselectCell();
+        if (this.renderer?.measureMode) this._setMeasureMode(false);
+      }
     });
   }
 
@@ -1037,6 +1105,9 @@ export class ViewerApp {
     this.elements.searchToggleButton.disabled = !enabled;
     this.elements.searchInput.disabled = !enabled;
     this._enableFilterControls(enabled);
+    if (this.elements.pathToggleButton) this.elements.pathToggleButton.disabled = !enabled;
+    if (this.elements.measureToggleButton) this.elements.measureToggleButton.disabled = !enabled;
+    if (!enabled && this.renderer?.measureMode) this._setMeasureMode(false);
   }
 
   // Only enabled when View As is set — otherwise there's no "mine" cell to find.
@@ -1106,6 +1177,9 @@ export class ViewerApp {
     this._clearFilter();
     this._updateSearchEntries();
 
+    this._allianceData = null;
+    this.renderer?.setAllianceData(null);
+
     this._loadViewAsForWorld();
 
     this._pathStartPick = null;
@@ -1132,14 +1206,30 @@ export class ViewerApp {
     this._restoreRouteForWorld();
   }
 
-  // Keeps renderer.myUserId, find-home, View As visibility, and the
-  // on-screen route's progress markers in sync with the current identity.
+  // Keeps renderer.myUserId, find-home, View As visibility, the map's
+  // alliance-relationship colors, and the on-screen route's progress markers
+  // in sync with the current identity.
   _updateIdentityAvailability() {
     const myUid = this._effectiveMyUid();
     this.renderer?.setMyUserId(myUid);
+    const viewerAllianceId = myUid != null ? (this._allianceData?.uidToAllianceId.get(myUid) ?? null) : null;
+    this.renderer?.setViewerAllianceId(viewerAllianceId);
     this._updateFindHomeAvailability();
     this._updateViewAsUI();
     if (this.currentRoute) this.renderer?.setRoute(this.currentRoute.route, myUid, this.currentRoute.originalOwners);
+  }
+
+  // Inverts { "<allianceId>": { name, members: [uid,...], relationships } } (server.py's
+  // /api/alliances shape) into the lookups _relationshipTier() needs: which alliance a
+  // uid belongs to, and each alliance's own name/relationships.
+  _buildAllianceData(raw) {
+    const alliancesById = new Map();
+    const uidToAllianceId = new Map();
+    for (const [allianceId, a] of Object.entries(raw || {})) {
+      alliancesById.set(allianceId, { name: a.name, relationships: a.relationships || {} });
+      for (const uid of a.members || []) uidToAllianceId.set(uid, allianceId);
+    }
+    return { alliancesById, uidToAllianceId };
   }
 
   // ─── Map loading ────────────────────────────────────────────────────────────
@@ -1173,13 +1263,18 @@ export class ViewerApp {
 
     if (useCache && !force) {
       try {
-        const [cachedTerrain, cachedSnapshot] = await Promise.all([
+        const [cachedTerrain, cachedSnapshot, cachedAlliances] = await Promise.all([
           sessionCacheGet(buildTerrainCacheKey(worldid)),
           sessionCacheGet(buildSnapshotCacheKey(worldid)),
+          sessionCacheGet(buildAllianceCacheKey(worldid)),
         ]);
         if (myGeneration !== this._worldLoadGeneration) return; // superseded mid-fetch
         if (cachedTerrain?.bytes) terrainBytes = cachedTerrain.bytes;
         if (cachedSnapshot?.snapshot) snapshot = cachedSnapshot.snapshot;
+        if (cachedAlliances?.alliances) {
+          this._allianceData = this._buildAllianceData(cachedAlliances.alliances);
+          this.renderer.setAllianceData(this._allianceData);
+        }
 
         if (terrainBytes && snapshot) {
           this.renderer.loadWorld(terrainBytes, snapshot);
@@ -1190,6 +1285,7 @@ export class ViewerApp {
           this._updateSearchEntries();
           this._updateFilterCount();
           this._autoFindHome();
+          this._updateIdentityAvailability(); // re-derives the viewer's alliance now that data may have just arrived
         }
       } catch { /* no cache, or a read failed — fall through to a normal fetch */ }
     }
@@ -1199,6 +1295,19 @@ export class ViewerApp {
     let stepsDone = 0;
     const bump = () => { stepsDone++; this._showProgress("Loading world", stepsDone, 2); };
     this._showProgress("Loading world", 0, 2);
+
+    // Alliances are best-effort — a failure here only means the map falls back to
+    // "no relationship data" coloring, not a failure to load the map itself, so it's
+    // kept out of the Promise.all below that the map's own load/error state depends on.
+    this.api.getAlliances(worldid)
+      .then((r) => {
+        if (myGeneration !== this._worldLoadGeneration) return;
+        this._allianceData = this._buildAllianceData(r.alliances);
+        this.renderer?.setAllianceData(this._allianceData);
+        this._updateIdentityAvailability();
+        sessionCacheSet(buildAllianceCacheKey(worldid), { alliances: r.alliances }).catch(() => {});
+      })
+      .catch(() => { /* map still works without relationship colors */ });
 
     let terrainResult, snapshotResult;
     try {
@@ -1332,9 +1441,14 @@ export class ViewerApp {
   _renderDetails(cell) {
     const panel    = this.elements.detailPanel;
     const title    = this.elements.detailsTitle;
+    const avatar   = this.elements.detailsAvatar;
     const content  = this.elements.detailsContent;
     const closeBtn = this.elements.detailsCloseButton;
     if (!title || !content) return;
+
+    // Only the player-cell branch below ever shows one — every other return path
+    // (no selection, water, wild monster) hides it first.
+    if (avatar) avatar.hidden = true;
 
     if (!cell) {
       if (panel) panel.hidden = true;
@@ -1429,11 +1543,46 @@ export class ViewerApp {
       return `<div class="detail-row"><span>${name}</span><span>${_fmtNum(r[key])} / ${_fmtNum(r[key + "max"])}</span></div>`;
     };
 
-    title.textContent = `${owner} ${baseType}: ${escapeHtml(n || "?")} (${x}, ${y})`;
+    // Alliance data is best-effort (see _doLoadWorld) — "?" means we don't know either
+    // way (not loaded yet, or the fetch failed), distinct from a confirmed "None".
+    let allianceLabel;
+    if (!this._allianceData) {
+      allianceLabel = "?";
+    } else {
+      const allianceId = this._allianceData.uidToAllianceId.get(uid);
+      allianceLabel = allianceId == null
+        ? "None"
+        : escapeHtml(this._allianceData.alliancesById.get(allianceId)?.name || "Unknown alliance");
+    }
+
+    // Coords already have their own detail row below, so the title doesn't repeat them.
+    if (avatar) {
+      const avatarUrl = cell.pic_square || cell.im;
+      if (avatarUrl) {
+        avatar.src = avatarUrl;
+        avatar.alt = n || "";
+        avatar.hidden = false;
+      } else {
+        avatar.hidden = true;
+      }
+    }
+
+    // Outposts only — a home base is already where you'd be jumping to.
+    const homeCell = !isHome ? this.renderer?.getHomeCellForUid(uid) : null;
+
+    title.textContent = `${owner} ${baseType}: ${escapeHtml(n || "?")}`;
     content.innerHTML = `
       <div class="detail-row"><span>Coords</span><span>${x}, ${y}</span></div>
-      <div class="detail-row"><span>Player</span><span>${escapeHtml(n || "Unknown")}</span></div>
+      <div class="detail-row"><span>Player</span><span>${n
+        ? `<span class="detail-player-name" data-uid="${uid}" data-name="${escapeHtml(n)}" title="Click to filter/highlight this player" tabindex="0" role="button">${escapeHtml(n)}</span>`
+        : "Unknown"}</span></div>
+      <div class="detail-row"><span>Alliance</span><span>${allianceLabel}</span></div>
       <div class="detail-row"><span>Type</span><span>${escapeHtml(baseType)}</span></div>
+      ${homeCell ? `
+        <div class="detail-row detail-action-row">
+          <span class="detail-go-home-link" data-x="${homeCell.x}" data-y="${homeCell.y}" title="Pan the map to this player's home base" tabindex="0" role="button">Go to Home →</span>
+        </div>
+      ` : ""}
       <div class="detail-row"><span>Level</span><span>${l ?? "?"}</span></div>
       ${terrainRow}
       ${outpostCount > 0 ? `<div class="detail-row"><span>Outposts</span><span>${this._formatOutpostCount(outpostCount)}</span></div>` : ""}
@@ -1599,6 +1748,68 @@ export class ViewerApp {
     });
   }
 
+  // ─── Measuring tool (ruler) ─────────────────────────────────────────────────
+  // Entirely client-side and in-memory — see MapRenderer's measureMode/measurements.
+  // Nothing here is persisted, so a page refresh clears every ruler, by design.
+
+  _setupMeasureTool() {
+    const { measureToggleButton, measureClearButton } = this.elements;
+    if (!measureToggleButton) return;
+
+    measureToggleButton.addEventListener("click", () => this._toggleMeasureMode());
+    measureClearButton?.addEventListener("click", () => this.renderer?.clearMeasurements());
+
+    if (this.renderer) {
+      this.renderer.onMeasurementsChanged = () => this._updateMeasureClearAvailability();
+    }
+    this._updateMeasureClearAvailability();
+  }
+
+  _toggleMeasureMode() {
+    if (!this.renderer || this.elements.measureToggleButton?.disabled) return;
+    this._setMeasureMode(!this.renderer.measureMode);
+  }
+
+  _setMeasureMode(on) {
+    if (!this.renderer) return;
+    this.renderer.setMeasureMode(on);
+    const { measureToggleButton } = this.elements;
+    measureToggleButton?.setAttribute("aria-expanded", String(on));
+    measureToggleButton?.classList.toggle("icon-button--active", on);
+    measureToggleButton?.setAttribute(
+      "title",
+      on ? "Measuring — click two points or drag a line (M to stop, Esc to cancel)" : "Measure distance (M)",
+    );
+  }
+
+  _updateMeasureClearAvailability() {
+    const btn = this.elements.measureClearButton;
+    if (!btn) return;
+    btn.disabled = !(this.renderer?.measurements?.length);
+  }
+
+  // ─── Avatar lightbox ────────────────────────────────────────────────────────
+
+  _setupAvatarLightbox() {
+    const { detailsAvatar, avatarLightbox, avatarLightboxImg } = this.elements;
+    if (!detailsAvatar || !avatarLightbox || !avatarLightboxImg) return;
+
+    detailsAvatar.addEventListener("click", () => this._openAvatarLightbox(detailsAvatar.src));
+    avatarLightbox.addEventListener("click", () => this._closeAvatarLightbox());
+  }
+
+  _openAvatarLightbox(src) {
+    const { avatarLightbox, avatarLightboxImg } = this.elements;
+    if (!avatarLightbox || !avatarLightboxImg || !src) return;
+    avatarLightboxImg.src = src;
+    avatarLightbox.hidden = false;
+  }
+
+  _closeAvatarLightbox() {
+    const { avatarLightbox } = this.elements;
+    if (avatarLightbox) avatarLightbox.hidden = true;
+  }
+
   // ─── Filter ──────────────────────────────────────────────────────────────────
 
   _setupFilterPanel() {
@@ -1656,6 +1867,19 @@ export class ViewerApp {
     }, true);
   }
 
+  /** The pink default until the player picks something else for this uid — see the chip's color input. */
+  _colorForFilterPlayer(uid) {
+    return this._filterPlayerColors.get(uid) || DEFAULT_FILTER_COLOR;
+  }
+
+  /** Pins a player to the multi-player filter — from the autocomplete dropdown or the detail panel's clickable name. */
+  _addPlayerToFilter(uid, name) {
+    if (!uid) return;
+    this._filterPlayers.set(uid, name);
+    this._renderFilterPlayerChips();
+    this._applyFilter();
+  }
+
   _renderFilterPlayerChips() {
     const area = document.getElementById("filter-player-tags-area");
     const input = this.elements.filterPlayerInput;
@@ -1665,14 +1889,32 @@ export class ViewerApp {
     area.querySelectorAll(".filter-player-chip").forEach((el) => el.remove());
 
     for (const [uid, name] of this._filterPlayers) {
+      const color = this._colorForFilterPlayer(uid);
       const chip = document.createElement("span");
       chip.className = "filter-player-chip";
       chip.innerHTML =
-        `<span class="filter-player-chip-name">${escapeHtml(name)}</span>` +
+        `<span class="filter-player-chip-name" title="Click to change ${escapeHtml(name)}'s color" tabindex="0" role="button">` +
+          `<span class="filter-player-chip-swatch" style="background:${color}"></span>${escapeHtml(name)}` +
+        `</span>` +
+        `<input type="color" class="filter-player-chip-color-input" value="${color}" aria-label="Color for ${escapeHtml(name)}" tabindex="-1">` +
         `<button class="filter-player-chip-remove" type="button" aria-label="Remove ${escapeHtml(name)}" data-uid="${uid}">×</button>`;
       area.insertBefore(chip, input);
 
-      chip.querySelector("button").addEventListener("click", () => {
+      const nameEl = chip.querySelector(".filter-player-chip-name");
+      const colorInput = chip.querySelector(".filter-player-chip-color-input");
+      const openPicker = () => colorInput.click();
+      nameEl.addEventListener("click", openPicker);
+      nameEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPicker(); }
+      });
+      colorInput.addEventListener("input", () => {
+        this._filterPlayerColors.set(uid, colorInput.value);
+        _saveFilterColors(this._filterPlayerColors);
+        nameEl.querySelector(".filter-player-chip-swatch").style.background = colorInput.value;
+        this._applyFilter();
+      });
+
+      chip.querySelector(".filter-player-chip-remove").addEventListener("click", () => {
         this._filterPlayers.delete(uid);
         this._renderFilterPlayerChips();
         this._applyFilter();
@@ -1711,13 +1953,9 @@ export class ViewerApp {
 
     filterPlayerResults.querySelectorAll(".search-result-item").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const uid  = Number(btn.dataset.uid) || null;
-        const name = btn.dataset.name;
-        if (uid) this._filterPlayers.set(uid, name);
-        this._renderFilterPlayerChips();
+        this._addPlayerToFilter(Number(btn.dataset.uid) || null, btn.dataset.name);
         filterPlayerInput.value = "";
         filterPlayerResults.hidden = true;
-        this._applyFilter();
       });
     });
   }
@@ -1812,6 +2050,9 @@ export class ViewerApp {
   _applyFilter() {
     // Uid set takes precedence; fall back to free-text substring when no players pinned
     const filterPlayerUids = this._filterPlayers.size > 0 ? new Set(this._filterPlayers.keys()) : null;
+    const filterPlayerColors = filterPlayerUids
+      ? new Map([...this._filterPlayers.keys()].map((uid) => [uid, this._colorForFilterPlayer(uid)]))
+      : null;
     const playerName = filterPlayerUids ? "" : (this.elements.filterPlayerInput?.value ?? "").trim().toLowerCase();
 
     const baseTypes = new Set();
@@ -1830,7 +2071,7 @@ export class ViewerApp {
       .forEach((cb) => flingerLevels.add(Number(cb.value)));
 
     const hasAny = playerName || filterPlayerUids || baseTypes.size || terrainTypes.size || towerBonusRange || resourceBonusRange || flingerLevels.size;
-    this.renderer?.setFilter(hasAny ? { playerName, filterPlayerUids, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } : null);
+    this.renderer?.setFilter(hasAny ? { playerName, filterPlayerUids, filterPlayerColors, baseTypes, terrainTypes, towerBonusRange, resourceBonusRange, flingerLevels } : null);
 
     this._updateFilterCount();
   }

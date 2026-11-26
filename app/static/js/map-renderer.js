@@ -1,4 +1,5 @@
 import { MR2, HEX_VERTICES, cellKey, getTileDef, isWater, tribeAt, levelAt, generateBaseId } from "./shared.js";
+import { wrappedHexDistance } from "./route.js";
 
 // ─── Geometry constants ─────────────────────────────────────────────────────
 // Flat-top hex grid, offset columns (odd columns shift down by half hex height).
@@ -24,14 +25,46 @@ const RECT_ZOOM = 0.08; // below this hexes are <8px wide; fillRect looks identi
 const TEXTURE_CELL_THRESHOLD = 120_000;
 
 // ─── Cell overlay colours ───────────────────────────────────────────────────
-const COL_MINE              = "#00e8ff";
-const COL_MINE_HOME_FILL    = "rgba(0,232,255,0.88)";
-const COL_MINE_OUT_FILL     = "rgba(0,170,230,0.50)";
-const COL_OTHER_HOME_FILL   = "rgba(255,210,30,0.90)";
-const COL_OTHER_OUT_FILL    = "rgba(255,130,0,0.55)";
-const COL_WM_FILL           = "rgba(200,200,200,0.35)";
+// Occupied-cell colors mostly follow the original game client's own alliance-
+// relationship system (com/monsters/alliances/AllyInfo.as's playerHex/allyHex/
+// friendlyHex/hostileHex/neutralHex/noneHex), so a base here is colored the same
+// as it would be in-game for whoever "View As" is set to. See _relationshipTier().
+// Exception: "self" — the game's own playerHex (0x3887e7, a flat medium blue) got
+// lost next to allyHex's pale blue and the water's dark navy on a map with this
+// much blue already. A plain hue swap to cyan wasn't enough on its own either —
+// blended at the same alpha as every other tier, the terrain underneath still
+// showed through and desaturated it into a muted teal — so self is pure cyan
+// *and* gets its own near-opaque alpha below, instead of sharing REL_ALPHA_*.
+const REL_RGB = {
+  self:     [0, 255, 255],   // was playerHex 0x3887e7 — pure cyan, see above
+  ally:     [172, 215, 249], // allyHex     0xacd7f9 — fellow member of the viewer's alliance
+  friendly: [19, 221, 5],    // friendlyHex 0x13dd05 — an alliance the viewer's alliance has befriended
+  hostile:  [255, 70, 40],   // hostileHex  0xff4628 — an alliance the viewer's alliance has declared an enemy
+  neutral:  [255, 255, 0],   // neutralHex  0xffff00 — any other alliance with no declared relation (or no viewer identity at all)
+  none:     [255, 255, 255], // noneHex     0xffffff — not in any alliance
+};
+const REL_ALPHA_HOME = 0.90;
+const REL_ALPHA_OUT  = 0.55;
+const SELF_ALPHA_HOME = 0.98; // self's own, much-closer-to-opaque alpha — see the comment above
+const SELF_ALPHA_OUT  = 0.90;
 
-// Reserved for future relationship colours: alliance (green), truce (purple).
+function relAlpha(tier, isHome) {
+  if (tier === "self") return isHome ? SELF_ALPHA_HOME : SELF_ALPHA_OUT;
+  return isHome ? REL_ALPHA_HOME : REL_ALPHA_OUT;
+}
+
+// ctx fillStyle strings, built once from REL_RGB so the canvas-path and texture-path
+// colors can never drift out of sync with each other.
+const REL_FILL = {};
+for (const tier of Object.keys(REL_RGB)) {
+  const [r, g, b] = REL_RGB[tier];
+  REL_FILL[tier] = {
+    home: `rgba(${r},${g},${b},${relAlpha(tier, true)})`,
+    out:  `rgba(${r},${g},${b},${relAlpha(tier, false)})`,
+  };
+}
+
+const COL_WM_FILL = "rgba(200,200,200,0.35)";
 
 const COL_HOVER_FILL  = "rgba(255,255,255,0.20)";
 const COL_SELECTED_ST = "rgba(255,210,0,0.92)";
@@ -39,18 +72,29 @@ const COL_SELECTED_FL = "rgba(255,210,0,0.30)";
 const COL_FILTER_FILL = "rgba(255,50,200,0.72)";
 const COL_DIM_FILL    = "rgba(0,0,0,0.38)";
 
-const COL_ROUTE_LINE    = "#39ff6a";
+// Purple so it reads as its own thing against the relationship colors above — green
+// and red are both already taken (friendly alliance / hostile alliance).
+const COL_ROUTE_LINE    = "#a855f7";
 const COL_ROUTE_START   = "#ffffff";
-const COL_ROUTE_BLOCKED = "#ff4444";
+// Same red as REL_RGB.hostile — a blocked hop is "someone else's now", the same
+// situation a hostile-alliance base is in, so it reuses that meaning rather than
+// inventing a second, slightly-different red.
+const COL_ROUTE_BLOCKED = "#ff4628";
 
-// Numeric RGB(+alpha) equivalents of the above, for _rebuildWorldTexture()'s
-// per-pixel ImageData writes. Kept in sync by hand.
+const COL_MEASURE_LINE      = "#ffd84a";
+const COL_MEASURE_SELECTED  = "#ffffff";
+const COL_MEASURE_DELETE    = "#ff4444";
+
+// A click/tap this close (screen px) to an existing measurement's line counts as hitting
+// it, and this close to its delete badge counts as hitting that instead.
+const MEASURE_HIT_PX    = 8;
+const MEASURE_BADGE_PX  = 10;
+
+// Numeric RGB equivalents of the terrain/WM colors above, for
+// _rebuildWorldTexture()'s per-pixel ImageData writes (occupant colors reuse
+// REL_RGB directly, so those can't drift out of sync the way these used to).
 const RGB_WATER = [15, 28, 96];
 const RGB_LAND  = [40, 32, 26];
-const RGB_MINE_HOME  = [0, 232, 255],  A_MINE_HOME  = 0.88;
-const RGB_MINE_OUT   = [0, 170, 230],  A_MINE_OUT   = 0.50;
-const RGB_OTHER_HOME = [255, 210, 30], A_OTHER_HOME = 0.90;
-const RGB_OTHER_OUT  = [255, 130, 0],  A_OTHER_OUT  = 0.55;
 const RGB_WM_TEX     = [200, 200, 200], A_WM_TEX    = 0.35;
 
 function blendRGB(base, overlay, alpha) {
@@ -143,6 +187,9 @@ export class MapRenderer {
     this._worldTexture = null;
     this._filterMatchCache = null; // { filter, cellsVersion, positions } — see _getFilterMatchPositions()
     this.myUserId = null;
+    this._allianceData = null;      // see setAllianceData()
+    this._viewerAllianceId = null;  // see setViewerAllianceId()
+    this._avatarCache = new Map();  // avatar URL -> {img, ready, failed} — see _getAvatarImage()
     this.zoom    = 0.25;
     this.viewX   = (MR2.mapWidth  * CS) / 2 - canvas.clientWidth  / (2 * this.zoom);
     this.viewY   = (MR2.mapHeight * RS + CO) / 2 - canvas.clientHeight / (2 * this.zoom);
@@ -159,6 +206,17 @@ export class MapRenderer {
     this._dragViewY  = 0;
     this._hasDragged = false;
 
+    // ── Measuring tool — not saved anywhere; gone on refresh by design ────────
+    this.measureMode  = false;
+    this.measurements = []; // [{ id, start: {x,y}, end: {x,y} }]
+    this._measureIdSeq = 1;
+    this._measureDownCell   = null; // cell under the pointer at measure-mode pointerdown
+    this._measureDownScreen = null; // {sx, sy} at that same pointerdown, for drag-vs-click
+    this._measureDragging   = false;
+    this._measurePendingStart = null; // cell from a first "click" awaiting its second click
+    this._measurePreviewEnd   = null; // live cell under pointer while click-dragging a ruler
+    this._selectedMeasurementId = null;
+
     this._dirty = true;
     this._rafId = null;
     this._viewportChangeTimer = null;
@@ -167,6 +225,7 @@ export class MapRenderer {
     this.onCellClick      = null;
     this.onCoordsChange   = null;
     this.onViewportChanged = null; // fires ~250ms after a pan/zoom
+    this.onMeasurementsChanged = null; // fires whenever this.measurements changes
 
     this._bindEvents();
     this._scheduleRender();
@@ -273,10 +332,9 @@ export class MapRenderer {
           const isHome = cell.b === MR2.cellTypes.HOMECELL;
           if (cell.uid === 0) {
             rgb = blendRGB(rgb, RGB_WM_TEX, A_WM_TEX);
-          } else if (cell.uid === this.myUserId) {
-            rgb = blendRGB(rgb, isHome ? RGB_MINE_HOME : RGB_MINE_OUT, isHome ? A_MINE_HOME : A_MINE_OUT);
           } else {
-            rgb = blendRGB(rgb, isHome ? RGB_OTHER_HOME : RGB_OTHER_OUT, isHome ? A_OTHER_HOME : A_OTHER_OUT);
+            const tier = this._relationshipTier(cell);
+            rgb = blendRGB(rgb, REL_RGB[tier], relAlpha(tier, isHome));
           }
         }
 
@@ -451,8 +509,13 @@ export class MapRenderer {
   }
 
   findHomeCell() {
+    return this.myUserId != null ? this.getHomeCellForUid(this.myUserId) : null;
+  }
+
+  /** Any player's home cell, not just "mine" — powers the detail panel's "Go to Home" link. */
+  getHomeCellForUid(uid) {
     for (const cell of this.cells.values()) {
-      if (cell.uid === this.myUserId && cell.b === MR2.cellTypes.HOMECELL) return cell;
+      if (cell.uid === uid && cell.b === MR2.cellTypes.HOMECELL) return cell;
     }
     return null;
   }
@@ -480,6 +543,67 @@ export class MapRenderer {
     this.myUserId = uid;
     if (this._worldTexture) this._rebuildWorldTexture();
     this.markDirty();
+  }
+
+  // ─── Alliance-relationship coloring ────────────────────────────────────────
+  // See REL_RGB/REL_FILL up top and _relationshipTier() below for the actual
+  // color logic — this is just the data these are computed against.
+
+  /** data: { uidToAllianceId: Map<uid, allianceId>, alliancesById: Map<allianceId, {name, relationships}> } | null */
+  setAllianceData(data) {
+    this._allianceData = data;
+    if (this._worldTexture) this._rebuildWorldTexture();
+    this.markDirty();
+  }
+
+  /** The "View As" player's own alliance id, or null (no identity, or no alliance). */
+  setViewerAllianceId(allianceId) {
+    if (this._viewerAllianceId === allianceId) return;
+    this._viewerAllianceId = allianceId;
+    if (this._worldTexture) this._rebuildWorldTexture();
+    this.markDirty();
+  }
+
+  /**
+   * Which of REL_RGB's six buckets an occupied cell falls into, mirroring the
+   * original client's AllyInfo.Relations() + MapRoomCell.SetupAlliance(): your
+   * own bases always win regardless of alliance, a no-alliance player is always
+   * "none", and with no alliance of your own to compare against (no View As, or
+   * View As a player with no alliance) everyone else just reads as "neutral" —
+   * same as the real client's `!ALLIANCES._myAlliance` early-out.
+   */
+  _relationshipTier(cell) {
+    if (this.myUserId != null && cell.uid === this.myUserId) return "self";
+    const allianceId = this._allianceData?.uidToAllianceId?.get(cell.uid);
+    if (!allianceId) return "none";
+    if (this._viewerAllianceId != null) {
+      if (allianceId === this._viewerAllianceId) return "ally";
+      const rel = this._allianceData?.alliancesById?.get(this._viewerAllianceId)?.relationships?.[allianceId];
+      if (rel === -1) return "hostile";
+      if (rel === 1) return "friendly";
+    }
+    return "neutral";
+  }
+
+  /**
+   * Returns a loaded, ready-to-draw avatar image for `url`, or null if there's
+   * none, it's still loading, or it failed — any of which just means the caller
+   * falls back to whatever's already drawn underneath (the flat hex fill).
+   * Loads lazily and caches by URL for the renderer's lifetime; markDirty() on
+   * load is what makes the avatar pop in on the next frame once it's ready.
+   */
+  _getAvatarImage(url) {
+    if (!url) return null;
+    let entry = this._avatarCache.get(url);
+    if (!entry) {
+      const img = new Image();
+      entry = { img, ready: false, failed: false };
+      img.onload  = () => { entry.ready = true; this.markDirty(); };
+      img.onerror = () => { entry.failed = true; };
+      img.src = url;
+      this._avatarCache.set(url, entry);
+    }
+    return entry.ready && !entry.failed ? entry.img : null;
   }
 
   // ─── Path tool's route overlay ────────────────────────────────────────────
@@ -511,6 +635,83 @@ export class MapRenderer {
     return counts;
   }
 
+  // ─── Measuring tool ─────────────────────────────────────────────────────────
+  // In-memory only — never persisted, so a refresh clears every ruler. See
+  // _bindEvents() for the click/drag-to-measure interaction and _render() for the
+  // line/label/delete-badge drawing.
+
+  /** Turning it off also drops any in-progress pick and deselects — but keeps existing rulers. */
+  setMeasureMode(on) {
+    this.measureMode = !!on;
+    this._measurePendingStart = null;
+    this._measureDragging = false;
+    this._measureDownCell = null;
+    this._selectedMeasurementId = null;
+    this.markDirty();
+  }
+
+  addMeasurement(start, end) {
+    this.measurements.push({ id: this._measureIdSeq++, start, end });
+    this.onMeasurementsChanged?.();
+    this.markDirty();
+  }
+
+  removeMeasurement(id) {
+    const before = this.measurements.length;
+    this.measurements = this.measurements.filter((m) => m.id !== id);
+    if (this.measurements.length === before) return;
+    if (this._selectedMeasurementId === id) this._selectedMeasurementId = null;
+    this.onMeasurementsChanged?.();
+    this.markDirty();
+  }
+
+  clearMeasurements() {
+    if (!this.measurements.length) return;
+    this.measurements = [];
+    this._selectedMeasurementId = null;
+    this.onMeasurementsChanged?.();
+    this.markDirty();
+  }
+
+  _cellCenterScreen(cx, cy) {
+    const { x: wx, y: wy } = cellToWorld(cx, cy);
+    return [
+      (wx - this.viewX) * this.zoom + (HW * this.zoom) / 2,
+      (wy - this.viewY) * this.zoom + (HH * this.zoom) / 2,
+    ];
+  }
+
+  _distToSegment(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 0 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  }
+
+  /** Measurement nearest (sx, sy) within MEASURE_HIT_PX, or null. */
+  _hitTestMeasurements(sx, sy) {
+    let best = null, bestDist = MEASURE_HIT_PX;
+    for (const m of this.measurements) {
+      const [ax, ay] = this._cellCenterScreen(m.start.x, m.start.y);
+      const [bx, by] = this._cellCenterScreen(m.end.x, m.end.y);
+      const d = this._distToSegment(sx, sy, ax, ay, bx, by);
+      if (d <= bestDist) { best = m; bestDist = d; }
+    }
+    return best;
+  }
+
+  /** True if (sx, sy) hits the delete badge of the currently-selected measurement. */
+  _hitTestMeasureDeleteBadge(sx, sy) {
+    if (this._selectedMeasurementId == null) return false;
+    const m = this.measurements.find((mm) => mm.id === this._selectedMeasurementId);
+    if (!m) return false;
+    const [ax, ay] = this._cellCenterScreen(m.start.x, m.start.y);
+    const [bx, by] = this._cellCenterScreen(m.end.x, m.end.y);
+    const midX = (ax + bx) / 2, midY = (ay + by) / 2;
+    return Math.hypot(sx - midX, sy - midY - MEASURE_BADGE_PX * 2) <= MEASURE_BADGE_PX;
+  }
+
   // Derives each hop's pending/completed/blocked status against current ownership.
   _recomputeRouteStatus() {
     if (!this.route) return;
@@ -529,23 +730,30 @@ export class MapRenderer {
 
   countFilterMatches() {
     if (!this._hasActiveFilter()) return 0;
-    return this._getFilterMatchPositions().length / 2;
+    let total = 0;
+    for (const positions of this._getFilterMatchBuckets().values()) total += positions.length / 2;
+    return total;
   }
 
-  // Flat [x, y, x, y, ...] world-cell coords of every filter match, cached by (filter,
-  // cellsVersion) so a drag/zoom while zoomed way out doesn't re-scan all 640k cells
-  // every frame — only the texture-blit render path (extreme zoom-out) uses this.
-  _getFilterMatchPositions() {
+  // Flat [x, y, x, y, ...] world-cell coords of every filter match, bucketed by resolved
+  // color (see _filterColorForCell()) and cached by (filter, cellsVersion) so a drag/zoom
+  // while zoomed way out doesn't re-scan all 640k cells every frame — only the
+  // texture-blit render path (extreme zoom-out) uses this.
+  _getFilterMatchBuckets() {
     const cache = this._filterMatchCache;
     if (cache && cache.filter === this.filter && cache.cellsVersion === this._cellsVersion) {
-      return cache.positions;
+      return cache.buckets;
     }
-    const positions = [];
+    const buckets = new Map();
     for (const cell of this.cells.values()) {
-      if (this._cellMatchesFilter(cell)) positions.push(cell.x, cell.y);
+      if (!this._cellMatchesFilter(cell)) continue;
+      const color = this._filterColorForCell(cell);
+      let bucket = buckets.get(color);
+      if (!bucket) { bucket = []; buckets.set(color, bucket); }
+      bucket.push(cell.x, cell.y);
     }
-    this._filterMatchCache = { filter: this.filter, cellsVersion: this._cellsVersion, positions };
-    return positions;
+    this._filterMatchCache = { filter: this.filter, cellsVersion: this._cellsVersion, buckets };
+    return buckets;
   }
 
   _hasActiveFilter() {
@@ -600,6 +808,12 @@ export class MapRenderer {
     }
 
     return true;
+  }
+
+  // Resolves the highlight color for a cell that already matched the active filter —
+  // a per-player color when the filter carries one for that uid, else the default.
+  _filterColorForCell(cell) {
+    return this.filter?.filterPlayerColors?.get(cell.uid) || COL_FILTER_FILL;
   }
 
   // ─── Rendering ────────────────────────────────────────────────────────────
@@ -669,20 +883,21 @@ export class MapRenderer {
         ctx.fillStyle = COL_DIM_FILL;
         ctx.fillRect(0, 0, W, H);
 
-        const matches = this._getFilterMatchPositions();
-        const fHit = [];
-        for (let i = 0; i < matches.length; i += 2) {
-          const cx = matches[i], cy = matches[i + 1];
-          const colOff = cx % 2 !== 0 ? CO : 0;
-          fHit.push((cx * CS - this.viewX) * zoom, (cy * RS + colOff - this.viewY) * zoom);
+        for (const [color, matches] of this._getFilterMatchBuckets()) {
+          const fHit = [];
+          for (let i = 0; i < matches.length; i += 2) {
+            const cx = matches[i], cy = matches[i + 1];
+            const colOff = cx % 2 !== 0 ? CO : 0;
+            fHit.push((cx * CS - this.viewX) * zoom, (cy * RS + colOff - this.viewY) * zoom);
+          }
+          fillBucket(color, fHit);
         }
-        fillBucket(COL_FILTER_FILL, fHit);
       }
     } else {
       const terrain = new Map();
       const overlay = new Map();
       const fDim    = [];
-      const fHit    = [];
+      const fHit    = new Map(); // color -> flat [x,y,...] screen positions, per filterPlayerColors
 
       for (let cx = startCX; cx <= endCX; cx++) {
         const colOff = cx % 2 !== 0 ? CO : 0;
@@ -700,17 +915,21 @@ export class MapRenderer {
             const isHome = cell.b === MR2.cellTypes.HOMECELL;
             const oc = cell.uid === 0
               ? COL_WM_FILL
-              : cell.uid === this.myUserId
-                ? (isHome ? COL_MINE_HOME_FILL : COL_MINE_OUT_FILL)
-                : (isHome ? COL_OTHER_HOME_FILL : COL_OTHER_OUT_FILL);
+              : REL_FILL[this._relationshipTier(cell)][isHome ? "home" : "out"];
             let ob = overlay.get(oc);
             if (!ob) { ob = []; overlay.set(oc, ob); }
             ob.push(sx, sy);
           }
 
           if (filterActive && cell) {
-            if (this._cellMatchesFilter(cell)) fHit.push(sx, sy);
-            else fDim.push(sx, sy);
+            if (this._cellMatchesFilter(cell)) {
+              const color = this._filterColorForCell(cell);
+              let bucket = fHit.get(color);
+              if (!bucket) { bucket = []; fHit.set(color, bucket); }
+              bucket.push(sx, sy);
+            } else {
+              fDim.push(sx, sy);
+            }
           }
         }
       }
@@ -719,8 +938,8 @@ export class MapRenderer {
       for (const [color, pos] of overlay) fillBucket(color, pos);
 
       if (filterActive) {
-        fillBucket(COL_DIM_FILL,    fDim);
-        fillBucket(COL_FILTER_FILL, fHit);
+        fillBucket(COL_DIM_FILL, fDim);
+        for (const [color, pos] of fHit) fillBucket(color, pos);
       }
     }
 
@@ -783,6 +1002,84 @@ export class MapRenderer {
       ctx.restore();
     }
 
+    // ─── Measuring tool overlay ─────────────────────────────────────────────
+    if (this.measurements.length || this._measurePendingStart ||
+        (this.measureMode && this._measureDownCell && this._measurePreviewEnd)) {
+      const drawRuler = (startCell, endCell, { selected = false, preview = false } = {}) => {
+        const [ax, ay] = this._cellCenterScreen(startCell.x, startCell.y);
+        const [bx, by] = this._cellCenterScreen(endCell.x, endCell.y);
+        const dist = wrappedHexDistance(startCell.x, startCell.y, endCell.x, endCell.y).distance;
+        const lineColor = selected ? COL_MEASURE_SELECTED : COL_MEASURE_LINE;
+
+        ctx.save();
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth   = selected ? 2.5 : 2;
+        ctx.lineCap     = "round";
+        ctx.globalAlpha = preview ? 0.7 : 1;
+        if (preview) ctx.setLineDash([6, 5]);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        for (const [px, py] of [[ax, ay], [bx, by]]) {
+          ctx.beginPath();
+          ctx.arc(px, py, 4, 0, Math.PI * 2);
+          ctx.fillStyle = lineColor;
+          ctx.fill();
+        }
+
+        const midX = (ax + bx) / 2, midY = (ay + by) / 2;
+        const label = `${dist} ${dist === 1 ? "hex" : "hexes"}`;
+        ctx.font = `bold 12px "Trebuchet MS", sans-serif`;
+        ctx.textAlign    = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth    = 3;
+        ctx.strokeStyle  = "rgba(0,0,0,0.85)";
+        ctx.strokeText(label, midX, midY);
+        ctx.fillStyle = lineColor;
+        ctx.fillText(label, midX, midY);
+        ctx.restore();
+
+        if (selected) {
+          const badgeY = midY + MEASURE_BADGE_PX * 2;
+          ctx.beginPath();
+          ctx.arc(midX, badgeY, MEASURE_BADGE_PX, 0, Math.PI * 2);
+          ctx.fillStyle = COL_MEASURE_DELETE;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(0,0,0,0.6)";
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth   = 1.6;
+          ctx.lineCap     = "round";
+          const r = MEASURE_BADGE_PX * 0.45;
+          ctx.beginPath();
+          ctx.moveTo(midX - r, badgeY - r); ctx.lineTo(midX + r, badgeY + r);
+          ctx.moveTo(midX + r, badgeY - r); ctx.lineTo(midX - r, badgeY + r);
+          ctx.stroke();
+        }
+      };
+
+      for (const m of this.measurements) {
+        drawRuler(m.start, m.end, { selected: m.id === this._selectedMeasurementId });
+      }
+
+      if (this._measurePendingStart) {
+        const [px, py] = this._cellCenterScreen(this._measurePendingStart.x, this._measurePendingStart.y);
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.strokeStyle = COL_MEASURE_LINE;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      if (this.measureMode && this._measureDownCell && this._measurePreviewEnd) {
+        drawRuler(this._measureDownCell, this._measurePreviewEnd, { preview: true });
+      }
+    }
+
     if (this.hoveredCell) {
       const { x: cx, y: cy } = this.hoveredCell;
       const { x: wx, y: wy } = cellToWorld(cx, cy);
@@ -804,7 +1101,59 @@ export class MapRenderer {
       ctx.stroke();
     }
 
-    if (!useTexture && zoom >= GRID_ZOOM) {
+    // ─── Home-base avatar markers ───────────────────────────────────────────
+    // The avatar fills the hex itself (clipped to its exact outline, cover-fit,
+    // ringed in the relationship color) rather than sitting in a smaller circle
+    // inset inside it. Shown across the whole "hexes are still hexes" zoom range
+    // (!useRect) rather than waiting for LABEL_ZOOM like name/level text does — a
+    // filled hex still reads as *something* well below the size text needs. Below
+    // RECT_ZOOM hexes degrade to plain filled rects and there's nothing worth
+    // drawing on top.
+    if (!useTexture && !useRect && !this._dragging) {
+      const hwPx = HW * zoom, hhPx = HH * zoom;
+      const ringWidth = Math.max(1.5, Math.min(hwPx, hhPx) * 0.055);
+
+      for (let cx = startCX; cx <= endCX; cx++) {
+        const colOff = cx % 2 !== 0 ? CO : 0;
+        for (let cy = startCY; cy <= endCY; cy++) {
+          const cell = this.cells.get(cellKey(cx, cy));
+          if (!cell || cell.b !== MR2.cellTypes.HOMECELL || !(cell.uid > 0)) continue;
+          const img = this._getAvatarImage(cell.pic_square || cell.im);
+          if (!img) continue; // no avatar, still loading, or failed — the flat hex fill underneath already covers it
+
+          const originSX = (cx * CS - this.viewX) * zoom;
+          const originSY = (cy * RS + colOff - this.viewY) * zoom;
+          const sx = originSX + hwPx / 2;
+          const sy = originSY + hhPx / 2;
+          const [r, g, b] = REL_RGB[this._relationshipTier(cell)];
+
+          // The hex itself is the frame — clip to its exact outline (not a circle
+          // inset inside it) and cover-fit the avatar into that same hex-shaped area,
+          // cropping whichever axis overflows rather than squishing the image.
+          const imgW = img.naturalWidth || img.width || 1;
+          const imgH = img.naturalHeight || img.height || 1;
+          const coverScale = Math.max(hwPx / imgW, hhPx / imgH);
+          const drawW = imgW * coverScale;
+          const drawH = imgH * coverScale;
+
+          ctx.save();
+          hexPath(ctx, originSX, originSY, zoom);
+          ctx.clip();
+          ctx.drawImage(img, sx - drawW / 2, sy - drawH / 2, drawW, drawH);
+          ctx.restore();
+
+          hexPath(ctx, originSX, originSY, zoom);
+          ctx.strokeStyle = `rgb(${r},${g},${b})`;
+          ctx.lineWidth = ringWidth;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Grid lines and name/level labels are the expensive part of this path (text layout
+    // especially) — skipped while actively dragging so panning stays smooth, and redrawn
+    // at full fidelity the instant the drag ends (see the pointerup/pointerleave handlers).
+    if (!useTexture && zoom >= GRID_ZOOM && !this._dragging) {
       ctx.strokeStyle = "rgba(0,0,0,0.18)";
       ctx.lineWidth   = 0.5;
       ctx.beginPath();
@@ -825,7 +1174,7 @@ export class MapRenderer {
       ctx.stroke();
     }
 
-    if (!useTexture && zoom >= LABEL_ZOOM) {
+    if (!useTexture && zoom >= LABEL_ZOOM && !this._dragging) {
       ctx.textAlign    = "center";
       ctx.textBaseline = "middle";
       ctx.lineJoin     = "round";
@@ -915,6 +1264,16 @@ export class MapRenderer {
     canvas.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
       canvas.setPointerCapture(e.pointerId);
+
+      if (this.measureMode) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        this._measureDownCell   = this._screenToCell(sx, sy);
+        this._measureDownScreen = { sx, sy };
+        this._measureDragging   = false;
+        return;
+      }
+
       this._dragging  = true;
       this._hasDragged = false;
       const rect = canvas.getBoundingClientRect();
@@ -928,6 +1287,14 @@ export class MapRenderer {
     canvas.addEventListener("pointermove", (e) => {
       const rect = canvas.getBoundingClientRect();
       const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+
+      if (this.measureMode && this._measureDownCell) {
+        const dx = sx - this._measureDownScreen.sx, dy = sy - this._measureDownScreen.sy;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) this._measureDragging = true;
+        this._measurePreviewEnd = this._screenToCell(sx, sy);
+        this.markDirty();
+        return;
+      }
 
       if (this._dragging) {
         const dx = sx - this._dragStartX, dy = sy - this._dragStartY;
@@ -956,9 +1323,62 @@ export class MapRenderer {
     });
 
     canvas.addEventListener("pointerup", (e) => {
+      if (this.measureMode) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+        const downCell = this._measureDownCell;
+        const wasDragging = this._measureDragging;
+        this._measureDownCell   = null;
+        this._measureDownScreen = null;
+        this._measureDragging   = false;
+        this._measurePreviewEnd = null;
+
+        if (downCell && wasDragging) {
+          // Click-and-drag: start = pointerdown cell, end = pointerup cell.
+          const endCoord = this._screenToCell(sx, sy);
+          if (endCoord && (endCoord.x !== downCell.x || endCoord.y !== downCell.y)) {
+            this.addMeasurement(downCell, endCoord);
+          }
+          this._selectedMeasurementId = null;
+          this.markDirty();
+          return;
+        }
+
+        // A plain click (no real drag): hitting the selected measurement's delete badge
+        // or an existing line takes priority over the click/click two-point flow below.
+        if (this._hitTestMeasureDeleteBadge(sx, sy)) {
+          this.removeMeasurement(this._selectedMeasurementId);
+          return;
+        }
+        const hit = this._hitTestMeasurements(sx, sy);
+        if (hit) {
+          this._selectedMeasurementId = hit.id;
+          this.markDirty();
+          return;
+        }
+        this._selectedMeasurementId = null;
+
+        const coord = downCell ?? this._screenToCell(sx, sy);
+        if (coord) {
+          if (this._measurePendingStart) {
+            if (coord.x !== this._measurePendingStart.x || coord.y !== this._measurePendingStart.y) {
+              this.addMeasurement(this._measurePendingStart, coord);
+            }
+            this._measurePendingStart = null;
+          } else {
+            this._measurePendingStart = coord;
+          }
+        }
+        this.markDirty();
+        return;
+      }
+
       if (!this._dragging) return;
       this._dragging = false;
       canvas.style.cursor = "crosshair";
+      // The last few frames of the drag skipped grid/labels (see _render()) — one more
+      // render restores them now that the drag is over.
+      this.markDirty();
       if (!this._hasDragged) {
         const rect = canvas.getBoundingClientRect();
         const coord = this._screenToCell(e.clientX - rect.left, e.clientY - rect.top);
@@ -977,7 +1397,14 @@ export class MapRenderer {
 
     canvas.addEventListener("pointerleave", () => {
       if (this.hoveredCell) { this.hoveredCell = null; this.markDirty(); if (this.onCellHover) this.onCellHover(null); }
-      if (this._dragging)   { this._dragging = false; canvas.style.cursor = "crosshair"; }
+      if (this._dragging)   { this._dragging = false; canvas.style.cursor = "crosshair"; this.markDirty(); }
+      if (this._measureDownCell) {
+        this._measureDownCell   = null;
+        this._measureDownScreen = null;
+        this._measureDragging   = false;
+        this._measurePreviewEnd = null;
+        this.markDirty();
+      }
     });
 
     let _td = null;
